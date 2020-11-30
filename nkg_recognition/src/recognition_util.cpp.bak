@@ -1,0 +1,311 @@
+#include "nkg_recognition/recognition_util.h"
+
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/segmentation/extract_clusters.h>
+
+#include "geometric_shapes/shapes.h"
+#include "geometric_shapes/shape_messages.h"
+#include "geometric_shapes/shape_operations.h"
+#include "geometric_shapes/mesh_operations.h"
+#include "moveit_msgs/PlanningScene.h"
+
+#include <fstream>
+#include <iostream>
+#include <ros/package.h>
+
+
+namespace recognition_util
+{
+RecognitionUtil::RecognitionUtil(){
+	configParam();
+	_xyzrgbPtr = boost::make_shared<pcl::PointCloud<pcl::PointXYZRGB> >();
+}
+
+RecognitionUtil::~RecognitionUtil(){
+
+}
+
+void RecognitionUtil::start(){
+	ros::NodeHandle n, _n("~");
+	std::string topic;
+	if (!_n.getParam("bb_topic", topic)){ROS_ERROR("No bb_topic!"); return;};
+	_bbSub = n.subscribe(topic, 1, &RecognitionUtil::bbCB, this);
+
+	if (!_n.getParam("rgbd_topic", topic)){ROS_ERROR("No rgbd_topic!"); return;};
+	_rgbdSub = n.subscribe(topic, 1, &RecognitionUtil::rgbdCB, this);
+	_objPub = n.advertise<moveit_msgs::PlanningScene>("recognizedScene", 1);
+
+	_pclPub = n.advertise<sensor_msgs::PointCloud2>("clusterPCL",1);
+}
+
+void RecognitionUtil::configParam(){
+	ros::NodeHandle _n("~");
+	_n.param("throttleRGBD", _throttleRGBD, 5);
+	_n.param("throttleBB", _throttleBB, 5);
+	_n.param("threshold", _threshold, 0.5);
+	if (!_n.getParam("fx", _fx)){ROS_ERROR("No camera info: fx!"); return;};
+	if (!_n.getParam("fy", _fy)){ROS_ERROR("No camera info: fy!"); return;};
+	if (!_n.getParam("ppx", _ppx)){ROS_ERROR("No camera info: ppx!"); return;};
+	if (!_n.getParam("ppy", _ppy)){ROS_ERROR("No camera info: ppy!"); return;};
+	std::string line;
+	std::ifstream file (ros::package::getPath("nkg_recognition")+"/config/names.txt");
+	if (file.is_open()){
+		while ( getline (file,line) ){
+			_classNames.push_back(line);
+		}
+		file.close();
+	}
+	else
+		ROS_ERROR("Unable to read Names!");
+	ROS_INFO("Total %lu Classes.", _classNames.size());
+}
+
+void RecognitionUtil::bbCB(const std_msgs::Float32MultiArrayConstPtr& msg){
+	static int count = 0;
+	if (++count < _throttleBB)
+		return;
+	else
+		count = 0;
+
+	_bBoxes.clear();
+	_bBoxes.resize(msg->layout.dim[0].size);
+	for (int i=0; i < _bBoxes.size(); ++i){
+		_bBoxes[i].prob 	= msg->data[6*i+5];
+		_bBoxes[i].height 	= msg->data[6*i+4];
+		_bBoxes[i].width 	= msg->data[6*i+3];
+		_bBoxes[i].center.y = msg->data[6*i+2] + _bBoxes[i].height/2;
+		_bBoxes[i].center.x = msg->data[6*i+1] + _bBoxes[i].width/2;
+		_bBoxes[i].classId 	= msg->data[6*i];
+	}
+}
+
+void RecognitionUtil::rgbdCB(const sensor_msgs::PointCloud2ConstPtr& msg){
+	static int count = 0;
+	if (++count < _throttleRGBD)
+		return;
+	else
+		count = 0;
+
+	ROS_INFO("Start addressing PCL!");
+	pcl::PCLPointCloud2 *cloud = new pcl::PCLPointCloud2, *temp = new pcl::PCLPointCloud2;
+	pcl::PCLPointCloud2ConstPtr cloudPtr(cloud);
+	pcl::PCLPointCloud2Ptr tempPtr(temp);
+
+	// Transform to pcl cloud
+	pcl_conversions::toPCL(*msg, *cloud);
+
+	// Voxel filter	
+	pcl::VoxelGrid<pcl::PCLPointCloud2> vg;
+	vg.setInputCloud(cloudPtr);
+	vg.setLeafSize (0.01f, 0.01f, 0.01f);
+	vg.filter (*tempPtr);
+
+	// Transform to pcl::PointCloud<pcl::PointXYZRGB>
+	pcl::fromPCLPointCloud2(*tempPtr, *_xyzrgbPtr);
+
+	if (pclCluster()){
+		ROS_INFO("Get %lu clusters.", _clusters.size());
+		int pairNum = matchInstance();
+		if (pairNum){
+			ROS_INFO("Pair %d instances.", pairNum);
+			if (pclRegistrate()){
+				ROS_INFO("Registrate %lu objects.", _instanceList.size());
+				publishObj();
+			}
+			else
+				ROS_WARN("No registered objects!");
+		}
+		else
+			ROS_WARN("No paired instances!");
+	}
+	else
+		ROS_WARN("No clusters!");
+}
+
+bool RecognitionUtil::pclCluster(){
+	ROS_INFO("Start clustering!");
+	_clusters.clear();
+	// Create the segmentation object for the planar model
+	pcl::SACSegmentation<pcl::PointXYZRGB> seg;
+	pcl::PointIndices::Ptr inliers (new pcl::PointIndices);
+	pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
+	seg.setOptimizeCoefficients (true);
+	seg.setModelType (pcl::SACMODEL_PLANE);
+	seg.setMethodType (pcl::SAC_RANSAC);
+	seg.setMaxIterations (100);
+	seg.setDistanceThreshold (0.02);
+
+    // Segment the largest planar component from the input cloud
+	seg.setInputCloud (_xyzrgbPtr);
+	seg.segment (*inliers, *coefficients);
+	if (inliers->indices.empty()){
+		ROS_WARN("Could not estimate a planar model for the given dataset.");
+		return false;
+	}
+
+    // Remove the planar inliers from the input cloud
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr tempPtr(new pcl::PointCloud<pcl::PointXYZRGB>);
+	pcl::ExtractIndices<pcl::PointXYZRGB> extract;
+	extract.setInputCloud (_xyzrgbPtr);
+	extract.setIndices (inliers);
+	extract.setNegative (true);
+	extract.filter (*tempPtr);
+
+	// Create the KdTree object for the search method of the extraction
+	pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB>);
+	tree->setInputCloud(tempPtr);
+
+	std::vector<pcl::PointIndices> cluster_indices;
+	pcl::EuclideanClusterExtraction<pcl::PointXYZRGB> ec;
+	ec.setClusterTolerance (0.02); // 2cm
+	ec.setMinClusterSize (100);
+	ec.setMaxClusterSize (25000);
+	ec.setSearchMethod (tree);
+	ec.setInputCloud (tempPtr);
+	ec.extract (cluster_indices);
+
+	// Construct _clusters
+	if (cluster_indices.empty())
+		return false;
+	else{
+		for (std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin (); it != cluster_indices.end (); ++it)
+			_clusters.push_back(Cluster(it->indices));
+
+		sensor_msgs::PointCloud2 output;
+		pcl::toROSMsg(*tempPtr, output);
+		_pclPub.publish(output);
+		return true;
+	}
+}
+
+int RecognitionUtil::matchInstance(){
+	ROS_INFO("Start matching instances!");
+	std::vector<Point2f> projPts;
+	float temp_min, temp_max;
+
+	// Set projected BBox for each cluster
+	for (int i=0; i<_clusters.size(); ++i){
+		// Get projected points
+		projection(_clusters[i].getIndices(), projPts);
+		temp_min = temp_max = projPts[0].x;
+		for (int j=1; j<projPts.size(); ++j){
+			if (temp_min > projPts[j].x)
+				temp_min = projPts[j].x;
+			if (temp_max < projPts[j].x)
+				temp_max = projPts[j].x;
+		}
+		_clusters[i].setWidth(temp_max-temp_min);
+		_clusters[i].setCenterX((temp_max+temp_min)/2);
+
+		temp_min = temp_max = projPts[0].y;
+		for (int j=1; j<projPts.size(); ++j){
+			if (temp_min > projPts[j].y)
+				temp_min = projPts[j].y;
+			if (temp_max < projPts[j].y)
+				temp_max = projPts[j].y;
+		}
+		_clusters[i].setHeight(temp_max-temp_min);
+		_clusters[i].setCenterY((temp_max+temp_min)/2);				
+	}
+
+	// Calculate IoU score and Assign Correspondence
+	float score, tempW, tempH, tempIoU;
+	int temp_idx, num=0;
+	for (int i=0; i<_bBoxes.size(); ++i){
+		// Calculate IoU
+		score = 0;
+		temp_idx = -1;
+		for (int j=0; j<_clusters.size(); ++j){
+			tempW = std::min(_bBoxes[i].getMaxX(),_clusters[j].getBBox().getMaxX()) - std::max(_bBoxes[i].getMinX(),_clusters[j].getBBox().getMinX());
+			tempH = std::min(_bBoxes[i].getMaxY(),_clusters[j].getBBox().getMaxY()) - std::max(_bBoxes[i].getMinY(),_clusters[j].getBBox().getMinY());
+			if (tempW > 0 && tempH > 0)
+				tempIoU = tempW*tempH / (_bBoxes[i].getArea() + _clusters[j].getBBox().getArea() - tempW*tempH);
+			else
+				tempIoU = 0;
+			if (score < tempIoU){
+				score = tempIoU;
+				temp_idx = j;
+			}
+		}
+		// Assign to clusters
+		if (score >= _threshold){
+			++num;
+			if (_clusters[temp_idx].getPairedIdx() == -1){
+				_clusters[temp_idx].setPairedIdx(i);
+				_clusters[temp_idx].setIoU(score);
+				_clusters[temp_idx].setClassId(_bBoxes[i].classId);
+				_clusters[temp_idx].setProb(_bBoxes[i].prob);
+			}
+			else{// TODO Refinement, two pointclouds are mis-combined into one
+
+			}
+		}
+	}	
+	return num;
+}
+
+void RecognitionUtil::projection(const std::vector<int>& list, std::vector<Point2f>& projPts){
+	float ptx,pty,ptz;
+	Point2f temp;
+	for (int i=0; i<list.size(); ++i){
+		ptx = _xyzrgbPtr->points[list[i]].x;
+		pty = _xyzrgbPtr->points[list[i]].y;
+		ptz = _xyzrgbPtr->points[list[i]].z;
+		temp.x = ptx/ptz * _fx + _ppx;
+		temp.y = pty/ptz * _fy + _ppy;
+		projPts.push_back(temp);
+	}
+}
+
+bool RecognitionUtil::pclRegistrate(){
+	ROS_INFO("Start registering!");
+	// TODO pcl registration
+	_instanceList.clear();
+	moveit_msgs::CollisionObject obj;
+	obj.header.frame_id = "";
+	shape_msgs::Mesh mesh;
+	shapes::ShapeMsg mesh_msg;
+	obj.meshes.resize(1);
+	obj.mesh_poses.resize(1);
+	geometry_msgs::Point pos;
+	Eigen::Vector3d scale;
+
+	for (int i=0; i<_clusters.size(); ++i){
+		if (_clusters[i].getPairedIdx() != -1){
+			obj.id = "recognized"+std::to_string(i);
+			decidePosScale(_clusters[i], pos, scale);
+			shapes::Mesh* m = shapes::createMeshFromResource("package://nkg_moving_manipulator/meshes/" + _classNames[_clusters[i].getClassId()] + ".stl", scale);	// TODO stl
+			shapes::constructMsgFromShape(m, mesh_msg);
+			mesh = boost::get<shape_msgs::Mesh>(mesh_msg);
+			obj.meshes[0] = mesh;
+			obj.mesh_poses[0].position = pos;
+			obj.mesh_poses[0].orientation.w= 1.0;
+			obj.mesh_poses[0].orientation.x= 0.0;
+			obj.mesh_poses[0].orientation.y= 0.0;
+			obj.mesh_poses[0].orientation.z= 0.0;
+			obj.operation = obj.ADD;
+			_instanceList.push_back(obj);
+		}
+	}
+	return !_instanceList.empty();
+}
+
+void RecognitionUtil::decidePosScale(const Cluster& cluster, geometry_msgs::Point& pos, Eigen::Vector3d& scale){
+	// TODO decide pos and scale for registered mesh
+	scale << 0.001, 0.001, 0.001;
+
+}
+
+void RecognitionUtil::publishObj(){
+	// TODO remove last published objects
+	ROS_INFO("Statrt publishing!");
+	moveit_msgs::PlanningScene ps;
+	ps.world.collision_objects.assign(_instanceList.begin(), _instanceList.end());
+	ps.is_diff = false;
+	_objPub.publish(ps);
+}
+
+}	// namespace recognition_util

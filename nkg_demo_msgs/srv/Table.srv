@@ -1,0 +1,5 @@
+float32[] cleaned_table
+---
+bool ready
+bool update
+float32[] table

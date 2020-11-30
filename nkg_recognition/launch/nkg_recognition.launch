@@ -1,0 +1,17 @@
+<launch>
+  <node name="recognition_node" pkg="nkg_recognition" type="nkg_recognition_node" output="screen">
+    <rosparam command="load" file="$(find nkg_recognition)/config/params.yaml"/>
+  </node>
+
+  <!-- RealSense Camera -->
+  <include file="$(find realsense2_camera)/launch/rs_rgbd.launch">
+    <arg name="enable_infra1" value="false"/>
+    <arg name="enable_infra2" value="false"/>
+    <arg name="depth_fps" value="30"/>
+    <arg name="color_fps" value="30"/>
+  </include>
+
+  <!-- Static tf between camera and robot -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="test_realsense2" args="0 0.2 0.8 1.57 1.25 0 dobot_m1_base_link camera_link"/>
+  <!-- 0 0.2 1.1 1.57 1.25 0 -->
+</launch>

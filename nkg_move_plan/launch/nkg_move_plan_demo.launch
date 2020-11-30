@@ -1,0 +1,78 @@
+<launch>
+  <arg name="node_name" default="plan_node"/>
+  <arg name="fake_execution" default="true"/>
+  <arg name="test" default="true"/>
+  <!-- specify the planning pipeline -->
+  <arg name="pipeline" default="ompl" />
+  <arg name="robot_moveit" default="$(find dobot_m1_moveit)"/>
+
+  <!-- By default, we are not in debug mode -->
+  <arg name="debug" default="false" />
+  <arg name="use_gui" default="false" />
+
+  <!-- Move Group Cap-->
+  <arg name="allow_trajectory_execution" default="true"/>
+  <arg name="jiggle_fraction" default="0.05" />
+  <arg name="publish_monitored_planning_scene" default="true"/>
+  <arg name="capabilities" default="descartes_capability/MoveGroupDescartesPathService"/>
+  <arg name="disable_capabilities" default="move_group/MoveGroupCartesianPathService"/>
+  <arg name="load_robot_description" default="true" />
+
+  <!-- load URDF, SRDF and joint_limits configuration -->
+  <include file="$(arg robot_moveit)/launch/planning_context.launch">
+    <arg name="load_robot_description" value="$(arg load_robot_description)" />
+  </include>
+
+  <!-- Hardware Interface for ros_control -->
+  <include file="$(find dobot_m1_hwi)/launch/dobot_m1_hwi.launch" unless="$(arg fake_execution)"/>
+
+  <!-- nkg_recognition node -->
+  <include file="$(find nkg_recognition)/launch/nkg_recognition.launch"/>
+
+  <!-- We do not have a robot connected, so publish fake joint states -->
+  <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher" if="$(arg fake_execution)">
+    <param name="use_gui" value="$(arg use_gui)"/>
+    <param name="rate" value="50"/>
+    <rosparam param="source_list">[plan_node/fake_controller_joint_states]</rosparam>
+  </node>
+
+  <!-- Given the published joint states, publish tf for the robot links -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" respawn="true" output="screen" />
+
+  <!-- Planning Functionality -->
+  <include ns="$(arg node_name)" file="$(arg robot_moveit)/launch/planning_pipeline.launch.xml">
+    <arg name="pipeline" value="$(arg pipeline)" />
+  </include>
+
+  <!-- Trajectory Execution Functionality -->
+  <include ns="$(arg node_name)" file="$(arg robot_moveit)/launch/trajectory_execution.launch.xml">
+    <arg name="moveit_manage_controllers" value="true" />
+    <arg name="moveit_controller_manager" value="Eddie" unless="$(arg fake_execution)"/>
+    <arg name="moveit_controller_manager" value="fake" if="$(arg fake_execution)"/>
+  </include>
+
+  <!-- Sensors Functionality -->
+  <include ns="$(arg node_name)" file="$(arg robot_moveit)/launch/sensor_manager.launch.xml" if="$(arg allow_trajectory_execution)">
+    <arg name="moveit_sensor_manager" value="Eddie" />
+  </include>
+
+  <!-- Run Rviz and load the default config to see the state of the move_group node -->
+  <include file="$(arg robot_moveit)/launch/moveit_rviz.launch">
+    <arg name="rviz_config" value="$(arg robot_moveit)/launch/moveit.rviz"/>
+    <arg name="debug" value="$(arg debug)"/>
+  </include>
+
+  <arg name="plan_node_param" value="" unless="$(arg test)"/>
+  <arg name="plan_node_param" value="test" if="$(arg test)"/>
+  <node name="$(arg node_name)" pkg="nkg_move_plan" type="nkg_move_plan_node" output="screen" args="$(arg plan_node_param)">
+    <rosparam command="load" file="$(find nkg_move_plan)/config/params.yaml"/>
+    <param name="jiggle_fraction" value="$(arg jiggle_fraction)" />
+    <!--param name="capabilities" value="$(arg capabilities)"/-->
+    <!--param name="disable_capabilities" value="$(arg disable_capabilities)"/-->
+    <param name="planning_scene_monitor/publish_planning_scene" value="$(arg publish_monitored_planning_scene)" />
+    <param name="planning_scene_monitor/publish_geometry_updates" value="$(arg publish_monitored_planning_scene)" />
+    <param name="planning_scene_monitor/publish_state_updates" value="$(arg publish_monitored_planning_scene)" />
+    <param name="planning_scene_monitor/publish_transforms_updates" value="$(arg publish_monitored_planning_scene)" />
+  </node>
+
+</launch>

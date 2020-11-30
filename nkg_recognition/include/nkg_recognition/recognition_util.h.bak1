@@ -1,0 +1,158 @@
+#ifndef NKG_RECOGNITION_UTIL_H
+#define NKG_RECOGNITION_UTIL_H
+
+#include <string>
+#include <ros/ros.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <std_msgs/Float32MultiArray.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+
+#include "nkg_demo_msgs/Table.h"
+#include "moveit_msgs/CollisionObject.h"
+#include "geometry_msgs/Point.h"
+#include <visualization_msgs/Marker.h>
+#include <Eigen/Eigen>
+#include <tf2_ros/transform_listener.h>
+#include <mutex>
+#include <opencv2/opencv.hpp>
+
+#define DEBUG 1
+
+namespace recognition_util
+{
+struct Point2f {
+	float x;
+	float y;
+};
+
+struct BBox {
+	Point2f center;
+	float width, height;
+	int classId = -1;
+	float prob = -1.0;
+};
+struct Instance {
+	std::string name;
+	float width = 0.0, height = 0.0, depth = 0.0;
+};
+
+struct Cuboid {
+	pcl::PointXYZ center;
+	float width, height, depth;	// TODO assume depth = width for now
+	std::vector<int> cluster_list;
+	void addCluster(const int idx){ cluster_list.push_back(idx); };
+};
+
+struct Table {
+	Table():width(0.0),height(0.0),depth(0.0),angle(0.0){};
+	Table(const std::vector<float>& vec){
+		center.x = vec[0];
+		center.y = vec[1];
+		width = vec[2];
+		height = vec[3];
+		depth = vec[4];
+		angle = vec[5];
+	};
+
+	float iou(const Table& t) const{
+		float area_new = width * height, area_old = t.width * t.height;
+		if (area_old == 0)
+			return 1.0;
+		else if (area_new == 0)
+			return 0.0;
+		else{
+			cv::RotatedRect t_new(cv::Point2f(center.x,center.y), cv::Size2f(width,height), angle);
+			cv::RotatedRect t_old(cv::Point2f(t.center.x,t.center.y), cv::Size2f(t.width,t.height), t.angle);
+			std::vector<cv::Point2f> vertices;
+			int intersectionType = cv::rotatedRectangleIntersection(t_new, t_old, vertices);
+			if (vertices.empty())
+				return 0.0;
+			else{
+				std::vector<cv::Point2f> order_pts;
+				cv::convexHull(cv::Mat(vertices), order_pts);
+				float area = cv::contourArea(order_pts);
+				return area / (area_new + area_old - area);
+			}
+		}	
+	};
+
+	Point2f center;
+	float width, height, depth, angle;
+};
+
+class Cluster {
+public:
+	Cluster(const std::vector<int>& list):_cuboid_idx(-1),_iou(0.0), _prob(0.0){
+		_indices.assign(list.begin(),list.end());
+	};
+	void setProb(const float prob){ _prob = prob; };
+	float getProb(void) const{ return _prob; };
+	void setIoU(const float iou){ _iou = iou; };
+	float getIoU(void) const{ return _iou; };
+	void setPairedIdx(const int idx){ _cuboid_idx = idx; };
+	int getPairedIdx(void) const{ return _cuboid_idx; };
+	std::vector<int> getIndices(void) const{ return _indices; };
+/*
+	void combineCluster(Cluster& cluster){
+		std::vector<int> temp = cluster.getIndices();
+		_indices.insert(_indices.end(), temp.begin(), temp.end());
+	};
+*/
+	
+private:
+	std::vector<int> _indices;
+	float _iou, _prob;
+	int _cuboid_idx;
+};
+
+class RecognitionUtil {
+public:
+	RecognitionUtil();
+	~RecognitionUtil();
+	
+	void start();
+//	int getClustersNum(){ return _clusters.size(); };	
+//	Cluster getCluster(int idx){ return _clusters[idx]; };
+
+private:
+	void configParam();													// configure parameters
+	void bbCB(const std_msgs::Float32MultiArrayConstPtr&);				// BBox callback
+	void rgbdCB(const sensor_msgs::PointCloud2ConstPtr&);				// rgbd callback
+
+	void updateCuboids();
+	void generateCuboids(const BBox&);									// generate cuboids from BBox
+	bool pclCluster();													// pointcloud clustering
+	int  matchInstance();												// pair clusters with cuboids
+	bool isInCuboid(const Cuboid&, const Cluster&);						// check cluster in cuboid
+	bool isInCuboid(const Cuboid&, const pcl::PointXYZRGB&);			// check pcl point in cuboid
+	void tuneAndConstruct();											// cuboid regression
+	void pubObjInfo();													// update table for plan_node
+	void updateTable();
+	bool getTable(nkg_demo_msgs::Table::Request&, nkg_demo_msgs::Table::Response&);	// ros service
+
+
+	std::vector<Cluster> _clusters;
+	ros::Publisher _obj_pub;
+#if DEBUG
+	ros::Publisher _obj_pcl, _table_pcl;
+	ros::Publisher _marker_pub;
+	visualization_msgs::Marker _draw_pts;
+#endif
+	ros::Subscriber _bb_sub, _rgbd_sub;
+	ros::ServiceServer _table_srv;
+	std::unique_ptr<tf2_ros::Buffer> _buffer;
+	std::unique_ptr<tf2_ros::TransformListener> _listener;
+	std::vector<Cuboid> _cuboids;
+	Table _table;
+	int _throttle_rgbd, _throttle_bb;
+	double _threshold;
+	double _fx, _fy, _ppx, _ppy;										// camera parameters
+	std::vector<moveit_msgs::CollisionObject> _obj_list;
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr _xyzrgb_ptr;
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr _table_ptr;
+	std::vector<Instance> _instances;									// customized COCO dataset
+	std::mutex _mutex;													// protect _cuboids
+};
+}
+#endif

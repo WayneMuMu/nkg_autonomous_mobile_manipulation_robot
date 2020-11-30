@@ -1,0 +1,8 @@
+careAllTargets: false
+replanDelay: 0.01
+replanAttempts: 50
+planAttempts: 3
+planTime: 0.1
+replanJump: 5
+#posTolerance: 0.005
+#oriTolerance: 0.005

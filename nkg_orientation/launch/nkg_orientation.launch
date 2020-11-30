@@ -1,0 +1,26 @@
+<launch>
+  <arg name="ref_robot_link" default="base_link"/>
+  <arg name="camera_link" default="camera_link"/>
+  <arg name="x" default="0"/>
+  <arg name="y" default="0.2"/>
+  <arg name="z" default="0.8"/>
+  <arg name="yaw" default="1.57"/>
+  <arg name="pitch" default="0.25"/>
+  <arg name="row" default="0"/>
+
+  <node name="orientation_node" pkg="nkg_orientation" type="nkg_orientation_node" output="screen">
+    <rosparam command="load" file="$(find nkg_orientation)/config/params.yaml"/>
+    <param name="ref_robot_link" value="$(arg ref_robot_link)"/>
+  </node>
+
+  <!-- RealSense Camera >
+  <include file="$(find realsense2_camera)/launch/rs_rgbd.launch">
+    <arg name="enable_infra1" value="false"/>
+    <arg name="enable_infra2" value="false"/>
+    <arg name="depth_fps" value="30"/>
+    <arg name="color_fps" value="30"/>
+  </include-->
+
+  <!-- Static tf between camera and map -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="ori_realsense2" args="$(arg x) $(arg y) $(arg z) $(arg yaw) $(arg pitch) $(arg row) $(arg ref_robot_link) $(arg camera_link)"/>
+</launch>

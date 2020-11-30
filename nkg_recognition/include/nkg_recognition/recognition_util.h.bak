@@ -1,0 +1,95 @@
+#ifndef NKG_RECOGNITION_UTIL_H
+#define NKG_RECOGNITION_UTIL_H
+
+#include <string>
+#include <ros/ros.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <std_msgs/Float32MultiArray.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+
+#include "moveit_msgs/CollisionObject.h"
+#include "geometry_msgs/Point.h"
+#include <Eigen/Eigen>
+
+namespace recognition_util
+{
+struct Point2f {
+	float x;
+	float y;
+};
+
+struct BBox {
+	Point2f center;
+	float width, height;
+	float classId = -1;
+	float prob = -1;
+	float getArea(){ return width * height; };
+	float getMaxX(){ return center.x + width/2; };
+	float getMinX(){ return center.x - width/2; };
+	float getMaxY(){ return center.y + height/2; };
+	float getMinY(){ return center.y + height/2; };
+};
+
+class Cluster {
+public:
+	Cluster(const std::vector<int>& list):_pairedIdx(-1),_iou(0) { _indices.assign(list.begin(),list.end()); };
+	void setProb(const float prob){ _projBBox.prob = prob; };
+	float getProb(void){ return _projBBox.prob; };
+	void setIoU(const float iou){ _iou = iou; };
+	float getIoU(void){ return _iou; };
+	void setPairedIdx(const int idx){ _pairedIdx = idx; };
+	int getPairedIdx(void){ return _pairedIdx; };
+	void setClassId(const int classId){ _projBBox.classId = classId; };
+	int getClassId(void){ return _projBBox.classId; };
+	void setCenterX(const float x){ _projBBox.center.x = x; };
+	void setCenterY(const float y){ _projBBox.center.y = y; };
+	void setWidth(const float width){ _projBBox.width = width; };
+	void setHeight(const float height){ _projBBox.height = height; };
+	BBox getBBox(void){ return _projBBox; };
+	int getSize(void){ return _indices.size(); };
+	void addIndice(const int i){ _indices.push_back(i); };
+	const std::vector<int>& getIndices(){ return _indices; };
+	
+private:
+	std::vector<int> _indices;
+	BBox _projBBox;
+	float _iou;
+	int _pairedIdx;
+};
+
+class RecognitionUtil {
+public:
+	RecognitionUtil();
+	~RecognitionUtil();
+	
+	void start();
+//	int getClustersNum(){ return _clusters.size(); };	
+//	Cluster getCluster(int idx){ return _clusters[idx]; };
+
+private:
+	void configParam();													// configure parameters
+	void bbCB(const std_msgs::Float32MultiArrayConstPtr&);				// BBox callback
+	void rgbdCB(const sensor_msgs::PointCloud2ConstPtr&);				// rgbd callback
+
+	bool pclCluster();													// pointcloud clustering
+	int  matchInstance();												// match clusters to instances from YoloV3
+	bool pclRegistrate();												// registrate with instances' stl (pointcloud)
+	void publishObj();
+
+	void projection(const std::vector<int>&, std::vector<Point2f>&);				// project 3D -> 2D to get cluster's BBox
+	void decidePosScale(const Cluster&, geometry_msgs::Point&, Eigen::Vector3d&);	// visualization
+
+	std::vector<Cluster> _clusters;
+	ros::Publisher _objPub, _pclPub;
+	ros::Subscriber _bbSub, _rgbdSub;
+	std::vector<BBox> _bBoxes;
+	int _throttleRGBD, _throttleBB;
+	double _threshold;
+	std::vector<moveit_msgs::CollisionObject> _instanceList;
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr _xyzrgbPtr;
+	std::vector<std::string> _classNames;								// names in COCO dataset
+	double _fx,_fy,_ppx,_ppy;											// camera's parameters
+};
+}
+#endif
