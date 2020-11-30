@@ -4,6 +4,7 @@
 - nkg_move_plan: motion planning for manipulators
 - nkg_recognition: process 3D pointclouds & 2D bounding boxes
 - nkg_orientation: In development ...
+- nkg_ca_controller: ros_controller collision avoidance via VPF 
 
 ## Starting the package:
 ```

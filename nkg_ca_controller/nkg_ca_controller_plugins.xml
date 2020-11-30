@@ -1,0 +1,9 @@
+<library path="lib/libnkg_ca_controller">
+
+  <class name="nkg_ca_controller/JointTrajectoryController" type="nkg_ca_controller::JointTrajectoryController" base_class_type="controller_interface::ControllerBase">
+    <description>
+      Test for nkg GUNBO_ROBOT. Apply ability of performing dynamic obstcale avoidance.
+    </description>
+  </class>
+
+</library>
