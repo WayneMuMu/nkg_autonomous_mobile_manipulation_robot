@@ -5,4 +5,3 @@ caminfo_topic: camera/color/camera_info
 #plane_tol: 0.17
 #voxel_output: voxel_points
 #cluster_output: cluster_points
-#orientation_output: orientation_info

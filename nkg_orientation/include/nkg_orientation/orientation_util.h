@@ -1,23 +1,19 @@
 #ifndef NKG_ORIENTATION_UTIL_H
 #define NKG_ORIENTATION_UTIL_H
 
-#include <string>
-#include <ros/ros.h>
-#include <sensor_msgs/PointCloud2.h>
+#include "nkg_demo_msgs/MultiBBox.h"
+
+#include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/filters/voxel_grid.h>
-#include <pcl/filters/extract_indices.h>
-#include <pcl/segmentation/sac_segmentation.h>
 #include <message_filters/subscriber.h>
-#include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
-#include <opencv2/opencv.hpp>
 #include <tf2_ros/transform_listener.h>
-#include <tf2/LinearMath/Transform.h>
-#include <std_msgs/ColorRGBA.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <visualization_msgs/MarkerArray.h>
+#include <shape_msgs/Mesh.h>
+
 #include <map>
-#include "nkg_demo_msgs/MultiBBox.h"
 
 namespace orientation_util
 {
@@ -26,6 +22,11 @@ enum SEG: uint8_t{
 	HORIZ = 1,
 	VERT = 2,
 	UNKNOWN = 3 
+};
+
+enum VISUAL: uint8_t{
+	MESH = 0,
+	CUBOID = 1
 };
 
 struct BBox {	// unit: pixel
@@ -64,8 +65,13 @@ private:
 	void generateCuboids(const tf2::Stamped<tf2::Transform>&);
 	void pubVoxel(const pcl::PCLPointCloud2&) const;
 	void pubCluster(std::vector<uint32_t>&) const;
-	void pubVisual() const;
+	void pubVisualCuboid() const;
 	uint8_t getPlane(const tf2::Stamped<tf2::Transform>&, pcl::PointIndices::Ptr&, pcl::ModelCoefficients::Ptr&, pcl::PointCloud<pcl::PointXYZRGB>::Ptr&) const;
+
+	// better visualization
+	void pubVisualMesh() const;
+	void pclMeshToShapeMsg(const pcl::PolygonMesh&, shape_msgs::Mesh&) const;
+	void pclMeshToMarkerMsg(const pcl::PolygonMesh&, visualization_msgs::Marker&) const;
 
 	message_filters::Subscriber<sensor_msgs::PointCloud2> _rgbd_sub;	// point cloud topic
 	message_filters::Subscriber<nkg_demo_msgs::MultiBBox> _bb_sub;		// bounding box topic

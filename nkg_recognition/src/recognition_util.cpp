@@ -9,32 +9,21 @@
  *********************************************************************/
 #include "nkg_recognition/recognition_util.h"
 
-#include "moveit_msgs/PlanningScene.h"
-#include "geometry_msgs/Pose.h"
-
-#include <pcl_conversions/pcl_conversions.h>
-#include <pcl/filters/extract_indices.h>
-#include <pcl/segmentation/sac_segmentation.h>
-#include <pcl/segmentation/extract_clusters.h>
-#include <pcl/filters/voxel_grid.h>
-
-#include "geometric_shapes/shapes.h"
-#include "geometric_shapes/shape_messages.h"
-#include "geometric_shapes/shape_operations.h"
-#include "geometric_shapes/mesh_operations.h"
-#include "moveit_msgs/PlanningScene.h"
-#include "moveit_msgs/CollisionObject.h"
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-#include <tf2/LinearMath/Vector3.h>
-#include <tf2/LinearMath/Quaternion.h>
-
-#include <fstream>
-#include <iostream>
 #include <ros/package.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
+#include <sensor_msgs/CameraInfo.h>
+#include <opencv2/opencv.hpp>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/surface/gp3.h>
+
+#include <iostream>
 #include <thread>
 #include <cmath>
 
-#define MAP_FRAME "dobot_m1_base_link"
 #define INFO 0
 
 namespace recognition_util
@@ -80,109 +69,153 @@ RecognitionUtil::RecognitionUtil(const ros::NodeHandle& nh): _n(nh){
 	configParam();
 
 	// pcl pointcloud
-	_xyz_ptr = boost::make_shared<pcl::PointCloud<pcl::PointXYZ> >();
-
-	// camera parameters (from relasense2 topic: camera_info)
-	_fx = 615.0352783203125;
-	_fy = 615.0865478515625;
-	_ppx = 321.55682373046875;
-	_ppy = 237.33897399902344;		
-
-#if DEBUG
-	_draw_pts.ns = "table";
-	_draw_pts.action = visualization_msgs::Marker::ADD;
-	_draw_pts.type = visualization_msgs::Marker::POINTS;
-	_draw_pts.id = 0;
-	_draw_pts.scale.x = 0.1;
-	_draw_pts.scale.y = 0.1;
-	_draw_pts.color.g = 1.0;
-	_draw_pts.color.a = 1.0;
-#endif
+	_xyzrgb_ptr = boost::make_shared<pcl::PointCloud<pcl::PointXYZRGB> >();
 }
 
 RecognitionUtil::~RecognitionUtil(){
 
 }
 
-void RecognitionUtil::start(){
-	ros::NodeHandle n, private_n("~");
+bool RecognitionUtil::start(){
+	ros::NodeHandle pn("~");
+	// get _ref_robot_link
+	if(!pn.getParam("ref_robot_link", _ref_robot_link)){
+		ROS_ERROR_STREAM("No ref_robot_link provided in launch file!");
+		return false;
+	}
+
 	std::string topic;
-	if (!private_n.getParam("output_topic", topic)){ROS_ERROR("No output_topic!"); return;};
-	_pcl_pub = n.advertise<sensor_msgs::PointCloud2>(topic,1);
-	if (!private_n.getParam("rgbd_topic", topic)){ROS_ERROR("No rgbd_topic!"); return;};
+	// camera parameters
+	if(!pn.getParam("caminfo_topic", topic)){
+		ROS_ERROR_STREAM("No caminfo_topic in config!");
+		return false;
+	}
+	sensor_msgs::CameraInfoConstPtr cam_msg = ros::topic::waitForMessage<sensor_msgs::CameraInfo>(topic, _n, ros::Duration(2.0));
+	if (!cam_msg){
+		ROS_ERROR_STREAM("No camera message received, camera params failed!");
+		return false;
+	}
+	_col = cam_msg->width;
+	_row = cam_msg->height;
+	_fx = cam_msg->K[0];
+	_fy = cam_msg->K[4];
+	_ppx = cam_msg->K[2];
+	_ppy = cam_msg->K[5];
+
+	// topic constructions
+	if (!pn.getParam("rgbd_topic", topic)){
+		ROS_ERROR_STREAM("No rgbd_topic in config!");
+		return false;
+	}
 	_rgbd_sub.subscribe(_n, topic, 1);
-	if (!private_n.getParam("bb_topic", topic)){ROS_ERROR("No bb_topic!"); return;};
+	if (!pn.getParam("bb_topic", topic)){ROS_ERROR_STREAM("No bb_topic in config!"); return false;}
 	_bb_sub.subscribe(_n, topic, 1);
+	pn.param<std::string>("voxel_output", topic, "voxel_points");
+	_voxel_pub = _n.advertise<sensor_msgs::PointCloud2>(topic, 1);
+	pn.param<std::string>("cluster_output", topic, "cluster_points");
+	_cluster_pub = _n.advertise<sensor_msgs::PointCloud2>(topic, 1);
+	pn.param<std::string>("visual_output", topic, "visual_output");
+	_marker_pub = _n.advertise<visualization_msgs::MarkerArray>(topic, 1);
+
+	_obj_pub = _n.advertise<moveit_msgs::PlanningScene>("/planning_scene", 1);
+	_table_srv = _n.advertiseService("get_table", &RecognitionUtil::getTable, this);
+
 	// cameraCB
 	_sync.reset(new Sync(MySyncPolicy(5), _rgbd_sub, _bb_sub));
 	_sync->registerCallback(boost::bind(&RecognitionUtil::cameraCB, this, _1, _2));
-
-	_obj_pub = n.advertise<moveit_msgs::PlanningScene>("planning_scene", 1);
-	_table_srv = n.advertiseService("get_table", &RecognitionUtil::getTable, this);
-
-#if DEBUG
-	_obj_pcl = n.advertise<sensor_msgs::PointCloud2>("cluster_pcl",1);
-	_marker_pub = n.advertise<visualization_msgs::Marker>("visualization_marker", 5);
-#endif
+	return true;
 }
 
 void RecognitionUtil::configParam(){
-	ros::NodeHandle n;
-	if(!n.getParam("camera/realsense2_camera/color_width", _col)){ROS_ERROR("No width"); return;};
-	if(!n.getParam("camera/realsense2_camera/color_height", _row)){ROS_ERROR("No height"); return;};
+	// for publish 3D scene object
+	_default_color.r = 0.0;
+	_default_color.g = 1.0;
+	_default_color.b = 0.0;
+	_default_color.a = 1.0;
 
+	// ros params
+	ros::NodeHandle pn("~");
+	pn.param("seg", _seg, true);
+	// plane tolerance when extracting horizontal plane (radian)
+	pn.param("plane_tol", _plane_tol, M_PI/20);
+
+	// read clusters' colors
 	std::string line;
-	std::ifstream file (ros::package::getPath("nkg_recognition")+"/config/names.txt");
+	std::ifstream file (ros::package::getPath("nkg_recognition")+"/config/cluster_colors.txt");
 	if (file.is_open()){
-		while ( getline (file,line) ){
+		std::vector<uint8_t> rgb;
+		while ( std::getline (file, line) ){
+			std::stringstream ss(line);			
+			if(std::getline(ss, line, ','))
+				rgb.emplace_back(static_cast<uint8_t>(std::stof(line)*255));	// r
+			if(std::getline(ss,line,','))
+				rgb.emplace_back(static_cast<uint8_t>(std::stof(line)*255));	// g
+			if(std::getline(ss,line,','))
+				rgb.emplace_back(static_cast<uint8_t>(std::stof(line)*255));	// b
+			if (rgb.size() != 3)
+				continue;
+			else
+				_rgbs.emplace_back((uint32_t)rgb[0]<<16 | (uint32_t)rgb[1]<<8 |(uint32_t)rgb[2]);
+			rgb.clear();
+		}
+		file.close();
+	}
+	else
+		ROS_ERROR_STREAM("Unable to read clusters' colors!");	
+	ROS_INFO_STREAM("Default "<< _rgbs.size() << " cluster_colors.");
+
+	// read classes names
+	file.open(ros::package::getPath("nkg_recognition")+"/config/names.txt");
+	if (file.is_open()){
+		while ( std::getline (file, line) ){
 			std::stringstream ss(line);
-			getline(ss, line, ',');
-			_classes.push_back(line);
+			std::getline(ss, line, ',');
+			_classes.emplace_back(std::move(line));
 			std::vector<float> rgba;
-			if(getline(ss, line, ','))
-				rgba.push_back(std::stof(line));	// r
-			if(getline(ss,line,','))
-				rgba.push_back(std::stof(line));	// g
-			if(getline(ss,line,','))
-				rgba.push_back(std::stof(line));	// b
-			if(getline(ss,line,','))
-				rgba.push_back(std::stof(line));	// a
+			if(std::getline(ss, line, ','))
+				rgba.emplace_back(std::stof(line));	// r
+			if(std::getline(ss,line,','))
+				rgba.emplace_back(std::stof(line));	// g
+			if(std::getline(ss,line,','))
+				rgba.emplace_back(std::stof(line));	// b
+			if(std::getline(ss,line,','))
+				rgba.emplace_back(std::stof(line));	// a
 			if (rgba.size() == 3)
-				rgba.push_back(1.0);	// a
+				rgba.emplace_back(1.0);	// append a
 			if (rgba.size() == 4){
-				moveit_msgs::ObjectColor oc;
-				oc.color.r = rgba[0];
-				oc.color.g = rgba[1];
-				oc.color.b = rgba[2];
-				oc.color.a = rgba[3];
-				_color_map[_classes.back()] = oc;	// oc.id not yet filled
+				std_msgs::ColorRGBA color;
+				color.r = rgba[0];
+				color.g = rgba[1];
+				color.b = rgba[2];
+				color.a = rgba[3];
+				_color_map[_classes.back()] = color;
 			}
 		}
 		file.close();
 	}
 	else
-		ROS_ERROR("Unable to read Names!");
-	ROS_INFO("Total %lu Classes.", _classes.size());
+		ROS_ERROR_STREAM("Unable to read class names!");
+	ROS_INFO_STREAM("Total "<< _classes.size() << " classes.");
 }
 
 void RecognitionUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, const nkg_demo_msgs::MultiBBoxConstPtr& bb_msg){
 #if INFO
-	ROS_ERROR("Start CB");
+	ROS_INFO_STREAM("Start CB");
 #endif
-	// get transform to map_frame
+	// get transform to _ref_robot_link
 	tf2::Stamped<tf2::Transform> trans;
 	try{
-		tf2::fromMsg(_tf_buffer->lookupTransform(MAP_FRAME, pcl_msg->header.frame_id, pcl_msg->header.stamp), trans);
+		tf2::fromMsg(_tf_buffer->lookupTransform(_ref_robot_link, pcl_msg->header.frame_id, pcl_msg->header.stamp), trans);
 	}
 	catch (tf2::TransformException& ex){
 		ROS_ERROR_STREAM("Transform error: " << ex.what() << "; quitting callback");
 		return;
 	}
 
-	// threads for updating bbox, table
-	std::thread t1(&RecognitionUtil::updateBBox, this, bb_msg);
+	// threads for updating bbox
+	std::thread tb(&RecognitionUtil::updateBBox, this, std::cref(bb_msg));
 #if INFO
-	ROS_ERROR("updateBBox thread start");
+	ROS_INFO_STREAM("updateBBox thread start");
 #endif
 
 	// transform to pcl cloud
@@ -195,170 +228,200 @@ void RecognitionUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 	vg.setLeafSize (0.01f, 0.01f, 0.01f);
 	vg.filter (*out);
 
-	// transform to pcl::PointCloud<pcl::PointXYZ>
-	pcl::fromPCLPointCloud2(*out, *_xyz_ptr);
+	// transform to pcl::PointCloud<pcl::PointXYZRGB>
+	pcl::fromPCLPointCloud2(*out, *_xyzrgb_ptr);
 #if INFO
-	ROS_ERROR("Finish voxel filtering, points: %lu", _xyz_ptr->size());
+	ROS_INFO_STREAM("Finish voxel filtering, points: " << _xyzrgb_ptr->size());
 #endif
 
-	// thread to publish to pointcloud_octomap_updater
-	std::thread t2(&RecognitionUtil::pubToOctomap, this), t3;	//	t3 for later use
+	// publish voxel
+	std::thread tv(&RecognitionUtil::pubVoxel, this, *out), tt;
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr table(new pcl::PointCloud<pcl::PointXYZRGB>);
+	bool found_t = false;
+
+	if (_seg){
+		pcl::PointIndices::Ptr inliers1(new pcl::PointIndices);
+		pcl::ModelCoefficients::Ptr coeffs1(new pcl::ModelCoefficients);		
+		uint8_t result1 = getPlane(trans, inliers1, coeffs1, _xyzrgb_ptr);
+		if(result1 == SEG::NOPLANE)
+			ROS_WARN_STREAM("Could not estimate a planar model for the given dataset.");
+		else if (result1 == SEG::HORIZ){
+			found_t = true;
+			pcl::ExtractIndices<pcl::PointXYZRGB> extract;
+			extract.setInputCloud(_xyzrgb_ptr);
+			extract.setIndices(inliers1);
+			extract.setNegative(false);
+			extract.filter(*table);
+			extract.setNegative(true);
+			extract.filter(*_xyzrgb_ptr);
+			_table.coeffs[0] = coeffs1->values[0];
+			_table.coeffs[1] = coeffs1->values[1];
+			_table.coeffs[2] = coeffs1->values[2];
+			_table.coeffs[3] = coeffs1->values[3];
+			tt = std::thread(&RecognitionUtil::updateTable, this, std::cref(table), std::cref(trans));
+		}
+		else if (result1 == SEG::VERT){
+			pcl::PointCloud<pcl::PointXYZRGB>::Ptr vert(new pcl::PointCloud<pcl::PointXYZRGB>);
+			pcl::ExtractIndices<pcl::PointXYZRGB> extract;
+			extract.setInputCloud(_xyzrgb_ptr);
+			extract.setIndices(inliers1);
+			extract.setNegative(true);
+			extract.setKeepOrganized(true);
+			extract.filter(*vert);
+			pcl::PointIndices::Ptr inliers2(new pcl::PointIndices);
+			pcl::ModelCoefficients::Ptr coeffs2(new pcl::ModelCoefficients);
+			uint8_t result2 = getPlane(trans, inliers2, coeffs2, vert);
+			if (result2 == SEG::HORIZ){
 #if INFO
-	ROS_ERROR("pubToOctomap thread start");
+				ROS_INFO_STREAM("Both vertical and horizontal plane found. Segment horizontal one");
 #endif
+				found_t = true;
+				pcl::ExtractIndices<pcl::PointXYZRGB> extract;
+				extract.setInputCloud(_xyzrgb_ptr);
+				extract.setIndices(inliers2);
+				extract.setNegative(false);
+				extract.filter(*table);
+				extract.setNegative(true);
+				extract.filter(*_xyzrgb_ptr);
+				_table.coeffs[0] = coeffs2->values[0];
+				_table.coeffs[1] = coeffs2->values[1];
+				_table.coeffs[2] = coeffs2->values[2];
+				_table.coeffs[3] = coeffs2->values[3];
+				tt =std::thread(&RecognitionUtil::updateTable,this,std::cref(table),std::cref(trans));
+			}
+			else
+				ROS_WARN_STREAM("Only vertical ones found. No plane segmented.");
+		}
+		else	// result1 == SEG::UNKNOWN
+			ROS_WARN_STREAM("The plane's orientation is unknown");
 
-	// create the segmentation object for the planar model
-	pcl::SACSegmentation<pcl::PointXYZ> seg;
-	pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
-	pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
-	seg.setOptimizeCoefficients(true);
-	seg.setModelType(pcl::SACMODEL_PLANE);
-	seg.setMethodType(pcl::SAC_RANSAC);
-	seg.setMaxIterations(100);
-	seg.setDistanceThreshold(0.01);
-	seg.setInputCloud (_xyz_ptr);
-	seg.segment (*inliers, *coefficients);
-
-	// in case that _xyz_ptr is changed in the following
-	t2.join();
 #if INFO
-	ROS_ERROR("pubToOctomap thread finish");
+		ROS_INFO_STREAM("Finish removing plane, points: " << _xyzrgb_ptr->size());
 #endif
-
-	bool found_t = true;
-	if (inliers->indices.empty()){
-		ROS_WARN("Could not estimate a planar model for the given dataset.");
-		found_t = false;
-		_table.reset();
 	}
-	else{
-		pcl::PointCloud<pcl::PointXYZ>::Ptr neg_t(new pcl::PointCloud<pcl::PointXYZ>),
-											table(new pcl::PointCloud<pcl::PointXYZ>);
-	    // set the planar inliers to NAN
-		pcl::ExtractIndices<pcl::PointXYZ> extract;
-		extract.setInputCloud(_xyz_ptr);
-		extract.setIndices(inliers);
-		extract.setNegative(false);
-		extract.filter(*table);
-		extract.setNegative(true);
-		extract.filter(*neg_t);
-		_xyz_ptr->swap(*neg_t);
-
-		// update _table
-		_table.coeffs[0] = coefficients->values[0];
-		_table.coeffs[1] = coefficients->values[1];
-		_table.coeffs[2] = coefficients->values[2];
-		_table.coeffs[3] = coefficients->values[3];
-		t3 = std::thread(&RecognitionUtil::updateTable, this, table, trans);
-#if INFO
-		ROS_ERROR("updateTable thread start");
-#endif
-	}
-#if INFO
-	ROS_ERROR("Finish removing table, points: %lu", _xyz_ptr->size());
-#endif
 	
 	// create the KdTree object for searching for clustering
-	pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
-	tree->setInputCloud(_xyz_ptr);
+	pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
+	tree->setInputCloud(_xyzrgb_ptr);
 
 	std::vector<pcl::PointIndices> cluster_indices;
-	pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-	ec.setClusterTolerance(0.01);
-	ec.setMinClusterSize(20);		// after removing plane, pts left about 2XXX - 4XXX
-	ec.setMaxClusterSize(2000);
+	pcl::EuclideanClusterExtraction<pcl::PointXYZRGB> ec;
+	ec.setClusterTolerance(0.02);
+	ec.setMinClusterSize(100);
+	ec.setMaxClusterSize(20000);
 	ec.setSearchMethod(tree);
-	ec.setInputCloud(_xyz_ptr);
+	ec.setInputCloud(_xyzrgb_ptr);
 	ec.extract(cluster_indices);
 
-	_clusters.clear();
 	if (!cluster_indices.empty()){
 		_clusters.resize(cluster_indices.size());
 		// construct _clusters
 		for (int i=0; i<_clusters.size(); ++i)
 			_clusters[i].indices = std::move(cluster_indices[i].indices);
 	}
+	else{
+		ROS_WARN_STREAM("Clustering Fails");
+		_clusters.clear();	
+	}
 #if INFO
-	ROS_ERROR("Finish clustering");
+	ROS_INFO_STREAM("Finish clustering");
 #endif
 
-#if DEBUG
-	std::thread t4(&RecognitionUtil::debugThread, this);
-#endif
+	// publish cluster
+	std::thread tc(&RecognitionUtil::pubCluster, this, std::ref(_rgbs));
 
-	// check bbox thread to generate cuboids
-	t1.join();
-#if INFO
-	ROS_ERROR("updateBBox thread finish");
-#endif
-
-	// generate cuboids
+	// check bbox thread and then generate cuboids
+	tb.join();
 	generateCuboids(trans);
 
-	// check table thread to publish to moveit
-	if (found_t){
-		t3.join();
-#if INFO
-		ROS_ERROR("updateTable thread finish");
-#endif
-	}
+	// check table thread
+	if (found_t)
+		tt.join();
 
-	// publish to nkg_move_plan node
-	pubToPlanNode();
+	// publish 3D
+//	pubVisualCuboid();
+	pubVisualMesh(trans);
 
-#if DEBUG
-	t4.join();
-#endif
+	// check pub voxel, cluster
+	tv.join();
+	tc.join();
 
 #if INFO
-	ROS_ERROR("Finish CB");
+	ROS_INFO_STREAM("Finish CB");
 #endif
 }
 
-#if DEBUG
-void RecognitionUtil::debugThread() const{
-	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_cluster(new pcl::PointCloud<pcl::PointXYZ>);
+uint8_t RecognitionUtil::getPlane(const tf2::Stamped<tf2::Transform>& trans, pcl::PointIndices::Ptr& inliers, pcl::ModelCoefficients::Ptr& coeffs, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud) const{
+	// create the segmentation object for the planar model
+	pcl::SACSegmentation<pcl::PointXYZRGB> seg;
+	seg.setOptimizeCoefficients(true);
+	seg.setModelType(pcl::SACMODEL_PLANE);
+	seg.setMethodType(pcl::SAC_RANSAC);
+	seg.setMaxIterations(100);
+	seg.setDistanceThreshold(0.01);
+	seg.setInputCloud (cloud);
+	seg.segment (*inliers, *coeffs);
+
+	if (inliers->indices.empty())
+		return SEG::NOPLANE;
+	else{
+		tf2::Vector3 horiz(0,0,1), p_origin(0,0,0),
+							p_normal(coeffs->values[0],coeffs->values[1],coeffs->values[2]);
+		tf2::Vector3 normal = trans * p_normal - trans * p_origin;
+		double angle = horiz.angle(normal);
+		double err = std::abs(angle-M_PI/2);
+		if ( err > M_PI/2 - _plane_tol)
+			return SEG::HORIZ;
+		else if (err < _plane_tol)
+			return SEG::VERT;
+		else
+			return SEG::UNKNOWN;
+	}
+}
+
+void RecognitionUtil::pubCluster(std::vector<uint32_t>& colors) const{
+	if (_clusters.empty())
+		return;
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_cluster(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+	if (colors.size() < _clusters.size()){
+		std::random_device rd;
+		std::default_random_engine gen(rd());
+		std::uniform_int_distribution<uint8_t> rgb(0, 255);
+		int add = _clusters.size() - colors.size();
+		for (int i=0; i<add; ++i)
+			colors.emplace_back((uint32_t)rgb(gen)<<16 | (uint32_t)rgb(gen)<<8 |(uint32_t)rgb(gen));
+	}
 
 	for (std::vector<Cluster>::const_iterator it=_clusters.cbegin(); it != _clusters.cend(); ++it){
-		for (std::vector<int>::const_iterator pit = it->indices.cbegin(); pit != it->indices.cend(); ++pit)
-			cloud_cluster->push_back(_xyz_ptr->at(*pit));
+		for (std::vector<int>::const_iterator pit = it->indices.cbegin(); pit != it->indices.cend(); ++pit){
+			pcl::PointXYZRGB point = _xyzrgb_ptr->at(*pit);
+			point.rgb = *reinterpret_cast<float*>(&colors[it-_clusters.cbegin()]);
+			cloud_cluster->push_back(point);
+		}
 	}
 	// in camera_frame
-	cloud_cluster->header.frame_id = _xyz_ptr->header.frame_id;
+	cloud_cluster->header.frame_id = _xyzrgb_ptr->header.frame_id;
 	cloud_cluster->width = cloud_cluster->size();
 	cloud_cluster->height = 1;
 	cloud_cluster->is_dense = true;
-	sensor_msgs::PointCloud2 obj_output;
-	pcl::toROSMsg(*cloud_cluster, obj_output);
-	_obj_pcl.publish(obj_output);
-}
-#endif
-
-void RecognitionUtil::pubToOctomap() const{
-	// in camera_frame
-	sensor_msgs::PointCloud2 pcl_output;
-	pcl::toROSMsg(*_xyz_ptr, pcl_output);
-	_pcl_pub.publish(pcl_output);
+	sensor_msgs::PointCloud2 output;
+	pcl::toROSMsg(*cloud_cluster, output);
+	output.header.stamp = ros::Time::now();
+	_cluster_pub.publish(output);
 }
 
-void RecognitionUtil::pubToPlanNode() const{
+void RecognitionUtil::pubVoxel(const pcl::PCLPointCloud2& voxel_pcl) const{
+	sensor_msgs::PointCloud2 output;
+	pcl_conversions::fromPCL(voxel_pcl, output);
+	_voxel_pub.publish(output);
+}
+
+void RecognitionUtil::pubVisualCuboid() const{
 	static std::vector<moveit_msgs::CollisionObject> last_obj_list;
-	std::vector<moveit_msgs::CollisionObject> obj_list;
-	moveit_msgs::CollisionObject obj;
-	obj.header.frame_id = MAP_FRAME;
-	geometry_msgs::Pose pose;
-	tf2::Quaternion quat;
-
-	shape_msgs::SolidPrimitive primitive;
-	primitive.type = primitive.BOX;
-	primitive.dimensions.resize(3);
-	obj.primitives.resize(1);
-	obj.primitive_poses.resize(1);
-	obj.operation = obj.ADD;
 
 	// publish
 	moveit_msgs::PlanningScene ps;
-	moveit_msgs::ObjectColor oc;
 	ps.is_diff = true;
 
 	// remove old objects
@@ -366,54 +429,46 @@ void RecognitionUtil::pubToPlanNode() const{
 		for (int i=0; i<last_obj_list.size(); ++i)
 			last_obj_list[i].operation = last_obj_list[i].REMOVE;
 		ps.world.collision_objects = std::move(last_obj_list);
+		last_obj_list.clear();
 		_obj_pub.publish(ps);
 	}
 
-	// add new objects
-	for (int i=0; i<_cuboids.size(); ++i){
-		if (_cuboids[i].classId != -1){
-			pose.position.x = _cuboids[i].center.x;
-			pose.position.y = _cuboids[i].center.y;
-			pose.position.z = _cuboids[i].center.z;
-			quat.setRPY(0, 0, _cuboids[i].ori * M_PI/180);
-			pose.orientation = tf2::toMsg(quat);
-			primitive.dimensions.assign(std::begin(_cuboids[i].dim), std::end(_cuboids[i].dim));
-			obj.id = _classes[_cuboids[i].classId] +"_cuboids_"+std::to_string(i);
-			if (_color_map.find(_classes[_cuboids[i].classId])!=_color_map.end())
-				oc = _color_map.at(_classes[_cuboids[i].classId]);
-			else{
-				oc.color.r = 1.0;
-				oc.color.g = 1.0;
-				oc.color.b = 0.0;
-				oc.color.a = 1.0;
-			}
-			oc.id = obj.id;
-			ps.object_colors.push_back(oc);
-			obj.primitives[0] = primitive;
-			obj.primitive_poses[0] = pose;
-			obj_list.push_back(obj);
-		}
-	}
+	if (_cuboids.empty())
+		return;
 
-	// add table, TODO integrate in ps plane
-	if (_table.width != 0 && _table.length != 0){
-		pose.position.x = _table.center.x;
-		pose.position.y = _table.center.y;
-		pose.position.z = _table.center.z;
-		quat.setRPY(0, 0, _table.angle * M_PI/180);
+	std::vector<moveit_msgs::CollisionObject> obj_list;
+	moveit_msgs::CollisionObject obj;
+	obj.header.frame_id = _ref_robot_link;
+	geometry_msgs::Pose pose;
+	tf2::Quaternion quat;
+	moveit_msgs::ObjectColor oc;
+	shape_msgs::SolidPrimitive primitive;
+	primitive.type = primitive.BOX;
+	primitive.dimensions.resize(3);
+	obj.primitives.resize(1);
+	obj.primitive_poses.resize(1);
+	obj.operation = obj.ADD;
+
+	// add new objects
+	for (std::vector<Cuboid>::const_iterator cu=_cuboids.cbegin(); cu != _cuboids.cend(); ++cu){
+		if (cu->classId == -1)
+			continue;
+		pose.position.x = cu->center.x;
+		pose.position.y = cu->center.y;
+		pose.position.z = cu->center.z;
+		quat.setRPY(0, 0, cu->yaw * M_PI/180);
 		pose.orientation = tf2::toMsg(quat);
-		std::vector<double> temp{_table.width, _table.length, _table.depth};
-		primitive.dimensions = std::move(temp);
-		obj.id = "table";
+		primitive.dimensions.assign(std::begin(cu->dim), std::end(cu->dim));
+		obj.id = _classes[cu->classId] +"_cuboid_"+std::to_string(cu-_cuboids.cbegin());
+		if (_color_map.find(_classes[cu->classId])!=_color_map.end())
+			oc.color = _color_map.at(_classes[cu->classId]);
+		else
+			oc.color = _default_color;
 		oc.id = obj.id;
-		oc.color.r = 1.0;
-		oc.color.g = 1.0;
-		oc.color.b = 1.0;
-		oc.color.a = 1.0;
-		ps.object_colors.push_back(oc);
+		ps.object_colors.emplace_back(oc);
 		obj.primitives[0] = primitive;
 		obj.primitive_poses[0] = pose;
-		obj_list.push_back(obj);
+		obj_list.emplace_back(obj);
 	}
 
 	if (!obj_list.empty()){
@@ -423,12 +478,175 @@ void RecognitionUtil::pubToPlanNode() const{
 	}
 }
 
+void RecognitionUtil::pubVisualMesh(const tf2::Stamped<tf2::Transform>& trans) const{
+	static std::vector<moveit_msgs::CollisionObject> last_obj_list;
+
+	// publish
+	moveit_msgs::PlanningScene ps;
+	ps.is_diff = true;
+
+	// remove old objects
+	if (!last_obj_list.empty()){
+		for (int i=0; i<last_obj_list.size(); ++i)
+			last_obj_list[i].operation = last_obj_list[i].REMOVE;
+		ps.world.collision_objects = std::move(last_obj_list);
+		last_obj_list.clear();
+		_obj_pub.publish(ps);
+	}
+
+	if (_cuboids.empty())
+		return;
+
+	std::vector<moveit_msgs::CollisionObject> obj_list;
+	moveit_msgs::CollisionObject obj;
+	obj.header.frame_id = _ref_robot_link;
+	moveit_msgs::ObjectColor oc;
+	obj.meshes.resize(1);
+	obj.mesh_poses.resize(1);
+	obj.operation = obj.ADD;
+	geometry_msgs::Pose pose;
+	tf2::Vector3 pos = trans.getOrigin();
+	pose.position.x = pos.getX();
+	pose.position.y = pos.getY();
+	pose.position.z = pos.getZ();
+	pose.orientation = tf2::toMsg(trans.getRotation());
+
+	// add new objects
+	for (std::vector<Cuboid>::const_iterator cu=_cuboids.cbegin(); cu != _cuboids.cend(); ++cu){
+		if (cu->classId == -1)
+			continue;
+		// build cuboid's pointcloud to reconstruct to mesh
+		pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+		for (std::vector<int>::const_iterator it=cu->cluster_idx.cbegin(); it!=cu->cluster_idx.cend(); ++it){
+			for (std::vector<int>::const_iterator pit = _clusters[*it].indices.cbegin(); pit != _clusters[*it].indices.cend(); ++pit){
+				cloud->push_back(_xyzrgb_ptr->at(*pit));
+			}
+		}
+
+		// in camera_frame
+		cloud->header.frame_id = _xyzrgb_ptr->header.frame_id;
+		cloud->width = cloud->size();
+		cloud->height = 1;
+		cloud->is_dense = true;
+
+  		// normal estimation
+		pcl::NormalEstimation<pcl::PointXYZRGB, pcl::Normal> n;
+		pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
+		pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
+		tree->setInputCloud(cloud);
+		n.setInputCloud(cloud);
+		n.setSearchMethod(tree);
+		n.setKSearch(20);
+		n.compute(*normals);
+
+		// concatenate the XYZRGB and normal fields
+		pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr cloud_N(new pcl::PointCloud<pcl::PointXYZRGBNormal>);
+		pcl::concatenateFields(*cloud, *normals, *cloud_N);
+
+		// create search tree
+		pcl::search::KdTree<pcl::PointXYZRGBNormal>::Ptr tree2(new pcl::search::KdTree<pcl::PointXYZRGBNormal>);
+		tree2->setInputCloud(cloud_N);
+
+		// initialize objects
+		pcl::GreedyProjectionTriangulation<pcl::PointXYZRGBNormal> gp3;
+		pcl::PolygonMesh triangles;
+
+		// set the maximum distance between connected points (maximum edge length)
+		gp3.setSearchRadius(0.025);
+
+		// set typical values for the parameters
+		gp3.setMu(2.5);
+		gp3.setMaximumNearestNeighbors(100);
+		gp3.setMaximumSurfaceAngle(M_PI/4); // 45 degrees
+		gp3.setMinimumAngle(M_PI/18); // 10 degrees
+		gp3.setMaximumAngle(2*M_PI/3); // 120 degrees
+		gp3.setNormalConsistency(false);
+
+		// get result
+		gp3.setInputCloud(cloud_N);
+		gp3.setSearchMethod(tree2);
+		gp3.reconstruct(triangles);
+
+		// fill in mesh
+		shape_msgs::Mesh mesh;
+		pclMeshToShapeMsg(triangles, mesh);
+
+		// construct obj_list
+		obj.id = _classes[cu->classId] +"_mesh_"+std::to_string(cu-_cuboids.cbegin());
+		if (_color_map.find(_classes[cu->classId])!=_color_map.end())
+			oc.color = _color_map.at(_classes[cu->classId]);
+		else
+			oc.color = _default_color;
+		oc.id = obj.id;
+		ps.object_colors.emplace_back(oc);
+		obj.meshes[0] = mesh;
+		obj.mesh_poses[0] = pose;
+		obj_list.emplace_back(obj);
+	}
+	if (!obj_list.empty()){
+		ps.world.collision_objects.assign(obj_list.begin(), obj_list.end());
+		last_obj_list = std::move(obj_list);
+		_obj_pub.publish(ps);
+	}
+}
+
+void RecognitionUtil::pclMeshToShapeMsg(const pcl::PolygonMesh& in, shape_msgs::Mesh& mesh) const{
+	// pcl mesh msg
+	pcl_msgs::PolygonMesh pcl_msg_mesh;
+	pcl_conversions::fromPCL(in, pcl_msg_mesh);
+
+	// iterate through poincloud2
+	sensor_msgs::PointCloud2ConstIterator<float> pt_iter(pcl_msg_mesh.cloud, "x");
+
+	// construct mesh vertices
+	mesh.vertices.resize(pcl_msg_mesh.cloud.height * pcl_msg_mesh.cloud.width);
+	for (std::vector<geometry_msgs::Point>::iterator it=mesh.vertices.begin(); it!=mesh.vertices.end(); ++it, ++pt_iter) {
+		it->x = pt_iter[0];
+		it->y = pt_iter[1];
+		it->z = pt_iter[2];
+	}
+
+	// construct mesh triangles
+	for (std::vector<pcl_msgs::Vertices>::const_iterator it = pcl_msg_mesh.polygons.cbegin(); it != pcl_msg_mesh.polygons.cend(); ++it){
+		if (it->vertices.size() < 3){
+			ROS_WARN_STREAM("Not enough points in polygon. Ignoring it.");
+			continue;
+		}
+		mesh.triangles.emplace_back();
+		mesh.triangles.back().vertex_indices[0] = it->vertices[0];
+		mesh.triangles.back().vertex_indices[1] = it->vertices[1];
+		mesh.triangles.back().vertex_indices[2] = it->vertices[2];
+	}
+}
+/*
+void RecognitionUtil::pclMeshToMarkerMsg(const pcl::PolygonMesh& in, visualization_msgs::Marker& m) const{
+	m.ns = "visual";
+	m.lifetime = ros::Duration();
+	m.type = visualization_msgs::Marker::TRIANGLE_LIST;
+	m.header.frame_id = in.cloud.header.frame_id;
+	m.header.stamp = ros::Time::now();
+	m.action = visualization_msgs::Marker::ADD;
+	m.scale.x = 1.0;
+	m.scale.y = 1.0;
+	m.scale.z = 1.0;
+
+	shape_msgs::Mesh mesh;
+	pclMeshToShapeMsg(in, mesh);
+	m.points.resize(mesh.triangles.size()*3);
+
+	int i=0;
+	for (int idx=0; idx<mesh.triangles.size(); ++idx)
+		for (int subidx = 0; subidx<3; ++subidx)
+			m.points[i++] = mesh.vertices[mesh.triangles[idx].vertex_indices[subidx]];
+}
+*/
 void RecognitionUtil::generateCuboids(const tf2::Stamped<tf2::Transform>& trans){
 	_cuboids.clear();
+
 	if (_bboxes.empty() || _clusters.empty())
 		return;
 #if INFO
-	ROS_ERROR("#_bboxes: %lu, #_clusters: %lu", _bboxes.size(), _clusters.size());
+	ROS_INFO_STREAM("#_bboxes: " << _bboxes.size() << ", #_clusters: " << _clusters.size());
 #endif
 	_cuboids.resize(_bboxes.size());
 
@@ -437,8 +655,9 @@ void RecognitionUtil::generateCuboids(const tf2::Stamped<tf2::Transform>& trans)
 		std::vector<bool> flag(_bboxes.size(), false);
 		for (std::vector<int>::const_iterator it=_clusters[i].indices.cbegin(); it!=_clusters[i].indices.cend(); ++it){
 			// projection
-			int px = static_cast<int>(_xyz_ptr->at(*it).x / _xyz_ptr->at(*it).z * _fx + _ppx),
-				py = static_cast<int>(_xyz_ptr->at(*it).y / _xyz_ptr->at(*it).z * _fy + _ppy);
+			int px = static_cast<int>(_xyzrgb_ptr->at(*it).x / _xyzrgb_ptr->at(*it).z * _fx + _ppx),
+				py = static_cast<int>(_xyzrgb_ptr->at(*it).y / _xyzrgb_ptr->at(*it).z * _fy + _ppy);
+			// find 8-neighbor belongs to bboxes or not
 			for (int r=py-1; r<=py+1; ++r){
 				for (int c=px-1; c<=px+1; ++c){
 					std::pair<int,int> idx = std::make_pair(c,r);
@@ -453,29 +672,37 @@ void RecognitionUtil::generateCuboids(const tf2::Stamped<tf2::Transform>& trans)
 			}
 			for (std::vector<bool>::const_iterator f=flag.cbegin(); f!=flag.cend(); ++f){
 				if (*f)
-					++vote[f-flag.begin()];
+					++vote[f-flag.cbegin()];
 			}
 		}
+		// find the bbox matches the most with the cluster
 		auto max_ptr = std::max_element(vote, vote+_bboxes.size());
 		int idx = max_ptr - vote;
+		// accept the matching if # matched points greter than a threshold
 		if (*max_ptr > _clusters[i].indices.size() * 0.8){
-			_cuboids[idx].cluster_idx.push_back(i);
-#if INFO
-			ROS_ERROR("_cuboids[%d] has _clusters[%d], ratio: %f", idx, i, static_cast<float>(*max_ptr) / _clusters[i].indices.size());
-#endif
+			_cuboids[idx].cluster_idx.emplace_back(i);
 		}
+#if INFO
+		ROS_INFO_STREAM("_cuboids[" << idx << "] covers _clusters[" << i << "] (size: " << _clusters[i].indices.size() <<") with ratio: " << static_cast<float>(*max_ptr) / _clusters[i].indices.size());
+#endif
 	}
 
+	int number = 0;
+	// for each cuboid, combine the clusters belong to it
 	for (std::vector<Cuboid>::iterator cu=_cuboids.begin(); cu!=_cuboids.end(); ++cu){
 		if (cu->cluster_idx.empty())
 			continue;
 		std::vector<cv::Point2f> pts;
-		float z_upper = -2.0, z_lower = 2.0;
+		float z_upper = std::numeric_limits<float>::lowest(),
+			  z_lower = std::numeric_limits<float>::max();
 		for (std::vector<int>::const_iterator cl=cu->cluster_idx.cbegin(); cl!=cu->cluster_idx.cend(); ++cl){
 			tf2::Vector3 p;
 			for (std::vector<int>::const_iterator id=_clusters[*cl].indices.cbegin(); id!=_clusters[*cl].indices.cend(); ++id){
-				p = trans * tf2::Vector3(_xyz_ptr->at(*id).x,_xyz_ptr->at(*id).y,_xyz_ptr->at(*id).z);
-				pts.push_back(cv::Point2f(p.getX(), p.getY()));
+				// transform coordinate, w.r.t _ref_robot_link
+				p = trans * tf2::Vector3(_xyzrgb_ptr->at(*id).x,_xyzrgb_ptr->at(*id).y,_xyzrgb_ptr->at(*id).z);
+				// record projection to XY-plane for later minAreaRect
+				pts.emplace_back(p.getX(), p.getY());
+				// update height of the object
 				if (p.getZ() > z_upper)
 					z_upper = p.getZ();
 				else if (p.getZ() < z_lower)
@@ -484,7 +711,7 @@ void RecognitionUtil::generateCuboids(const tf2::Stamped<tf2::Transform>& trans)
 		}
 
 		if (pts.size() < 5){
-			ROS_ERROR("Cuboids too small!");
+			ROS_ERROR_STREAM("Cuboids too small!");
 			continue;
 		}
 		/*********************************************************************
@@ -495,8 +722,8 @@ void RecognitionUtil::generateCuboids(const tf2::Stamped<tf2::Transform>& trans)
 		cu->dim[0] = top.size.width;
 		cu->dim[1] = top.size.height;
 		cu->dim[2] = z_upper - z_lower;
-		cu->ori = top.angle;
-		cu->classId = _bboxes[cu-_cuboids.begin()].classId;
+		cu->yaw = top.angle;
+		cu->classId = _bboxes[cu-_cuboids.cbegin()].classId;
 		cu->center.x = top.center.x;
 		cu->center.y = top.center.y;
 		cu->center.z = (z_upper + z_lower)/2;
@@ -519,13 +746,13 @@ void RecognitionUtil::updateBBox(const nkg_demo_msgs::MultiBBoxConstPtr& bb_msg)
 		_bboxes[i].re = std::min(_row, _bboxes[i].rs + static_cast<int>(bb_msg->bbox.data[6*i+4]));
 		for (int r=_bboxes[i].rs; r<=_bboxes[i].re; ++r){
 			for (int c=_bboxes[i].cs; c<=_bboxes[i].ce; ++c){
-				_bb_map[std::make_pair(c,r)].push_back(i);
+				_bb_map[std::make_pair(c,r)].emplace_back(i);
 			}
 		}
 	}
 }
 
-void RecognitionUtil::updateTable(const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud, const tf2::Stamped<tf2::Transform>& trans){
+void RecognitionUtil::updateTable(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, const tf2::Stamped<tf2::Transform>& trans){
 	std::vector<cv::Point2f> pts;
 	pts.resize(cloud->size());
 	cv::Point2f temp;
@@ -555,20 +782,28 @@ void RecognitionUtil::updateTable(const pcl::PointCloud<pcl::PointXYZ>::ConstPtr
 	_table.depth = z_upper - z_lower;
 	_table.angle = table.angle;
 
-#if DEBUG
-	_draw_pts.header.frame_id = MAP_FRAME;
+	visualization_msgs::MarkerArray vis;
+	visualization_msgs::Marker draw_pts;
+	draw_pts.ns = "table";
+	draw_pts.action = visualization_msgs::Marker::ADD;
+	draw_pts.type = visualization_msgs::Marker::POINTS;
+	draw_pts.id = 0;
+	draw_pts.scale.x = 0.1;
+	draw_pts.scale.y = 0.1;
+	draw_pts.color.g = 1.0;
+	draw_pts.color.a = 1.0;
+	draw_pts.header.frame_id = _ref_robot_link;
 	geometry_msgs::Point pt;
-	_draw_pts.points.clear();
 	pt.z = _table.center.z;
 	cv::Point2f vertices[4];
 	table.points(vertices);
 	for (int i=0; i<4; ++i){
 		pt.x = vertices[i].x;
 		pt.y = vertices[i].y;
-		_draw_pts.points.push_back(pt);
+		draw_pts.points.emplace_back(pt);
 	}
-	_marker_pub.publish(_draw_pts);
-#endif
+	vis.markers.emplace_back(draw_pts);
+	_marker_pub.publish(vis);
 }
 
 bool RecognitionUtil::getTable(nkg_demo_msgs::Table::Request &req,nkg_demo_msgs::Table::Response &res){
@@ -580,7 +815,7 @@ bool RecognitionUtil::getTable(nkg_demo_msgs::Table::Request &req,nkg_demo_msgs:
 	res.table[4] = _table.length;
 	res.table[5] = _table.depth;
 	res.table[6] = _table.angle;
-	ROS_ERROR("%f,%f,%f,%f,%f,%f,%f", _table.center.x, _table.center.y, _table.center.z, _table.width, _table.length, _table.depth, _table.angle);
+	ROS_ERROR_STREAM("Table info: " << _table.center.x <<","<< _table.center.y <<","<< _table.center.z <<","<< _table.width <<","<< _table.length <<","<< _table.depth <<","<< _table.angle);
 
 	// according to openCV, angle is within (-90,0] (degree)
 	float angle_thres = 90.0, iou_thres = 0.3;	// TODO threshold tuning

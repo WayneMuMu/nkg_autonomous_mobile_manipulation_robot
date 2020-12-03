@@ -9,25 +9,23 @@
  *********************************************************************/
 #include "nkg_orientation/orientation_util.h"
 #include "nkg_demo_msgs/ObjectInfo.h"
-#include <geometry_msgs/Pose.h>
-#include <pcl_conversions/pcl_conversions.h>
-#include <pcl/segmentation/extract_clusters.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-#include <tf2/LinearMath/Vector3.h>
-#include <tf2/LinearMath/Quaternion.h>
-#include <sensor_msgs/CameraInfo.h>
-#include <fstream>
-#include <iostream>
-#include <ros/package.h>
-#include <thread>
-#include <limits>
-#include <cmath>
-#include <random>
-#include <std_msgs/MultiArrayDimension.h>
-#include <visualization_msgs/MarkerArray.h>
-#include <visualization_msgs/Marker.h>
 
-#define INFO 1
+#include <ros/package.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
+#include <sensor_msgs/CameraInfo.h>
+#include <opencv2/opencv.hpp>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/surface/gp3.h>
+
+#include <iostream>
+#include <thread>
+#include <cmath>
+
+#define INFO 0
 
 namespace orientation_util
 {
@@ -117,16 +115,15 @@ void OrientationUtil::configParam(){
 		while ( std::getline (file, line) ){
 			std::stringstream ss(line);			
 			if(std::getline(ss, line, ','))
-				rgb.emplace_back(std::stoi(line));	// r
+				rgb.emplace_back(static_cast<uint8_t>(std::stof(line)*255));	// r
 			if(std::getline(ss,line,','))
-				rgb.emplace_back(std::stoi(line));	// g
+				rgb.emplace_back(static_cast<uint8_t>(std::stof(line)*255));	// g
 			if(std::getline(ss,line,','))
-				rgb.emplace_back(std::stoi(line));	// b
+				rgb.emplace_back(static_cast<uint8_t>(std::stof(line)*255));	// b
 			if (rgb.size() != 3)
 				continue;
-			else{
+			else
 				_rgbs.emplace_back((uint32_t)rgb[0]<<16 | (uint32_t)rgb[1]<<8 |(uint32_t)rgb[2]);
-			}
 			rgb.clear();
 		}
 		file.close();
@@ -184,7 +181,7 @@ void OrientationUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 	}
 
 	// threads for updating bbox
-	std::thread t1(&OrientationUtil::updateBBox, this, bb_msg);
+	std::thread tb(&OrientationUtil::updateBBox, this, bb_msg);
 #if INFO
 	ROS_INFO_STREAM("updateBBox thread start");
 #endif
@@ -206,7 +203,7 @@ void OrientationUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 #endif
 
 	// publish voxel
-	std::thread t2(&OrientationUtil::pubVoxel, this, *out);
+	std::thread tv(&OrientationUtil::pubVoxel, this, *out);
 
 	if (_seg){
 		pcl::PointIndices::Ptr inliers1(new pcl::PointIndices);
@@ -281,18 +278,19 @@ void OrientationUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 #endif
 
 	// publish cluster
-	std::thread t3(&OrientationUtil::pubCluster, this, std::ref(_rgbs));
+	std::thread tc(&OrientationUtil::pubCluster, this, std::ref(_rgbs));
 
 	// check bbox thread and then generate cuboids
-	t1.join();
+	tb.join();
 	generateCuboids(trans);
 
 	// publish 3D
-	pubVisual();
+//	pubVisualCuboid();
+	pubVisualMesh();
 
 	// check pub voxel, cluster
-	t2.join();
-	t3.join();
+	tv.join();
+	tc.join();
 
 #if INFO
 	ROS_INFO_STREAM("Finish CB");
@@ -316,9 +314,11 @@ uint8_t OrientationUtil::getPlane(const tf2::Stamped<tf2::Transform>& trans, pcl
 		tf2::Vector3 horiz(0,0,1), p_origin(0,0,0),
 							p_normal(coeffs->values[0],coeffs->values[1],coeffs->values[2]);
 		tf2::Vector3 normal = trans * p_normal - trans * p_origin;
-		if (std::abs(horiz.angle(normal)) < _plane_tol)
+		double angle = horiz.angle(normal);
+		double err = std::abs(angle-M_PI/2);
+		if ( err > M_PI/2 - _plane_tol)
 			return SEG::HORIZ;
-		else if (std::abs(horiz.dot(normal.normalize())) < sin(_plane_tol))
+		else if (err < _plane_tol)
 			return SEG::VERT;
 		else
 			return SEG::UNKNOWN;
@@ -335,9 +335,8 @@ void OrientationUtil::pubCluster(std::vector<uint32_t>& colors) const{
 		std::default_random_engine gen(rd());
 		std::uniform_int_distribution<uint8_t> rgb(0, 255);
 		int add = _clusters.size() - colors.size();
-		for (int i=0; i<add; ++i){
+		for (int i=0; i<add; ++i)
 			colors.emplace_back((uint32_t)rgb(gen)<<16 | (uint32_t)rgb(gen)<<8 |(uint32_t)rgb(gen));
-		}
 	}
 
 	for (std::vector<Cluster>::const_iterator it=_clusters.cbegin(); it != _clusters.cend(); ++it){
@@ -364,46 +363,184 @@ void OrientationUtil::pubVoxel(const pcl::PCLPointCloud2& voxel_pcl) const{
 	_voxel_pub.publish(output);
 }
 
-void OrientationUtil::pubVisual() const{
+void OrientationUtil::pubVisualCuboid() const{
 	visualization_msgs::MarkerArray vis;
 	visualization_msgs::Marker marker;
 
 	// clean
 	marker.action = visualization_msgs::Marker::DELETEALL;
-	vis.markers.emplace_back(std::move(marker));
+	vis.markers.emplace_back(marker);
 	_marker_pub.publish(vis);
 	vis.markers.clear();
-	
+	if (_cuboids.empty())
+		return;
+
+	marker.header.frame_id = _ref_robot_link;
+	marker.ns="visual";
+	marker.type = visualization_msgs::Marker::CUBE;
+	marker.action = visualization_msgs::Marker::ADD;
+	marker.lifetime = ros::Duration();
+	marker.header.stamp = ros::Time::now();
+
 	geometry_msgs::Pose pose;
 	tf2::Quaternion quat;
 
-	for (std::vector<Cuboid>::const_iterator it=_cuboids.cbegin(); it != _cuboids.cend(); ++it){
-		if (it->classId == -1)
+	for (std::vector<Cuboid>::const_iterator cu=_cuboids.cbegin(); cu != _cuboids.cend(); ++cu){
+		if (cu->classId == -1)
 			continue;
-		marker.header.frame_id = _ref_robot_link;
-		marker.ns="visual";
-		marker.id = it-_cuboids.cbegin();
-		marker.type = visualization_msgs::Marker::CUBE;
-		marker.action = visualization_msgs::Marker::ADD;
-		pose.position.x = it->center.x;
-		pose.position.y = it->center.y;
-		pose.position.z = it->center.z;
-		quat.setRPY(0, 0, it->yaw * M_PI/180);
+		// marker info
+
+		marker.id = cu-_cuboids.cbegin();
+
+		pose.position.x = cu->center.x;
+		pose.position.y = cu->center.y;
+		pose.position.z = cu->center.z;
+		quat.setRPY(0, 0, cu->yaw * M_PI/180);
 		pose.orientation = tf2::toMsg(quat);
 		marker.pose = pose;
-		marker.scale.x = it->dim[0];
-		marker.scale.y = it->dim[1];
-		marker.scale.z = it->dim[2];
-		if (_color_map.find(_classes[it->classId])!=_color_map.end())
-			marker.color = _color_map.at(_classes[it->classId]);
+		marker.scale.x = cu->dim[0];
+		marker.scale.y = cu->dim[1];
+		marker.scale.z = cu->dim[2];
+		if (_color_map.find(_classes[cu->classId])!=_color_map.end())
+			marker.color = _color_map.at(_classes[cu->classId]);
 		else
 			marker.color = _default_color;
-		marker.lifetime = ros::Duration();
-		marker.header.stamp = ros::Time::now();
-		vis.markers.emplace_back(std::move(marker));
+		vis.markers.emplace_back(marker);
 	}
 	if (!vis.markers.empty())
 		_marker_pub.publish(vis);
+}
+
+void OrientationUtil::pubVisualMesh() const{
+	visualization_msgs::MarkerArray vis;
+	visualization_msgs::Marker marker;
+
+	// clean
+	marker.action = visualization_msgs::Marker::DELETEALL;
+	vis.markers.emplace_back(marker);
+	_marker_pub.publish(vis);
+	vis.markers.clear();
+	if (_cuboids.empty())
+		return;
+
+	for (std::vector<Cuboid>::const_iterator cu=_cuboids.cbegin(); cu != _cuboids.cend(); ++cu){
+		if (cu->classId == -1)
+			continue;
+		// marker info		
+		marker.id = cu-_cuboids.cbegin();
+		if (_color_map.find(_classes[cu->classId])!=_color_map.end())
+			marker.color = _color_map.at(_classes[cu->classId]);
+		else
+			marker.color = _default_color;
+
+		// build cuboid's pointcloud to reconstruct to mesh
+		pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+		for (std::vector<int>::const_iterator it=cu->cluster_idx.cbegin(); it!=cu->cluster_idx.cend(); ++it){
+			for (std::vector<int>::const_iterator pit = _clusters[*it].indices.cbegin(); pit != _clusters[*it].indices.cend(); ++pit){
+				cloud->push_back(_xyzrgb_ptr->at(*pit));
+			}
+		}
+
+		// in camera_frame
+		cloud->header.frame_id = _xyzrgb_ptr->header.frame_id;
+		cloud->width = cloud->size();
+		cloud->height = 1;
+		cloud->is_dense = true;
+
+  		// normal estimation
+		pcl::NormalEstimation<pcl::PointXYZRGB, pcl::Normal> n;
+		pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
+		pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
+		tree->setInputCloud(cloud);
+		n.setInputCloud(cloud);
+		n.setSearchMethod(tree);
+		n.setKSearch(20);
+		n.compute(*normals);
+
+		// concatenate the XYZRGB and normal fields
+		pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr cloud_N(new pcl::PointCloud<pcl::PointXYZRGBNormal>);
+		pcl::concatenateFields(*cloud, *normals, *cloud_N);
+
+		// create search tree
+		pcl::search::KdTree<pcl::PointXYZRGBNormal>::Ptr tree2(new pcl::search::KdTree<pcl::PointXYZRGBNormal>);
+		tree2->setInputCloud(cloud_N);
+
+		// initialize objects
+		pcl::GreedyProjectionTriangulation<pcl::PointXYZRGBNormal> gp3;
+		pcl::PolygonMesh triangles;
+
+		// set the maximum distance between connected points (maximum edge length)
+		gp3.setSearchRadius(0.025);
+
+		// set typical values for the parameters
+		gp3.setMu(2.5);
+		gp3.setMaximumNearestNeighbors(100);
+		gp3.setMaximumSurfaceAngle(M_PI/4); // 45 degrees
+		gp3.setMinimumAngle(M_PI/18); // 10 degrees
+		gp3.setMaximumAngle(2*M_PI/3); // 120 degrees
+		gp3.setNormalConsistency(false);
+
+		// get result
+		gp3.setInputCloud(cloud_N);
+		gp3.setSearchMethod(tree2);
+		gp3.reconstruct(triangles);
+
+		// fill in mesh info to marker info
+		pclMeshToMarkerMsg(triangles, marker);
+		vis.markers.emplace_back(marker);
+	}
+	if (!vis.markers.empty())
+		_marker_pub.publish(vis);
+}
+
+void OrientationUtil::pclMeshToShapeMsg(const pcl::PolygonMesh& in, shape_msgs::Mesh& mesh) const{
+	// pcl mesh msg
+	pcl_msgs::PolygonMesh pcl_msg_mesh;
+	pcl_conversions::fromPCL(in, pcl_msg_mesh);
+
+	// iterate through poincloud2
+	sensor_msgs::PointCloud2ConstIterator<float> pt_iter(pcl_msg_mesh.cloud, "x");
+
+	// construct mesh vertices
+	mesh.vertices.resize(pcl_msg_mesh.cloud.height * pcl_msg_mesh.cloud.width);
+	for (std::vector<geometry_msgs::Point>::iterator it=mesh.vertices.begin(); it!=mesh.vertices.end(); ++it, ++pt_iter) {
+		it->x = pt_iter[0];
+		it->y = pt_iter[1];
+		it->z = pt_iter[2];
+	}
+
+	// construct mesh triangles
+	for (std::vector<pcl_msgs::Vertices>::const_iterator it = pcl_msg_mesh.polygons.cbegin(); it != pcl_msg_mesh.polygons.cend(); ++it){
+		if (it->vertices.size() < 3){
+			ROS_WARN_STREAM("Not enough points in polygon. Ignoring it.");
+			continue;
+		}
+		mesh.triangles.emplace_back();
+		mesh.triangles.back().vertex_indices[0] = it->vertices[0];
+		mesh.triangles.back().vertex_indices[1] = it->vertices[1];
+		mesh.triangles.back().vertex_indices[2] = it->vertices[2];
+	}
+}
+
+void OrientationUtil::pclMeshToMarkerMsg(const pcl::PolygonMesh& in, visualization_msgs::Marker& m) const{
+	m.ns = "visual";
+	m.lifetime = ros::Duration();
+	m.header.stamp = ros::Time::now();
+	m.type = visualization_msgs::Marker::TRIANGLE_LIST;
+	m.header.frame_id = in.cloud.header.frame_id;
+	m.action = visualization_msgs::Marker::ADD;
+	m.scale.x = 1.0;
+	m.scale.y = 1.0;
+	m.scale.z = 1.0;
+
+	shape_msgs::Mesh mesh;
+	pclMeshToShapeMsg(in, mesh);
+	m.points.resize(mesh.triangles.size()*3);
+
+	int i=0;
+	for (int idx=0; idx<mesh.triangles.size(); ++idx)
+		for (int subidx = 0; subidx<3; ++subidx)
+			m.points[i++] = mesh.vertices[mesh.triangles[idx].vertex_indices[subidx]];
 }
 
 void OrientationUtil::generateCuboids(const tf2::Stamped<tf2::Transform>& trans){
@@ -518,7 +655,7 @@ void OrientationUtil::generateCuboids(const tf2::Stamped<tf2::Transform>& trans)
 		dims.label = "number";
 		dims.size = number;
 		dims.stride = 7;
-		obj_list.obj_detail.layout.dim.emplace_back(std::move(dims));
+		obj_list.obj_detail.layout.dim.emplace_back(dims);
 		obj_list.header.stamp = ros::Time::now();
 		obj_list.header.frame_id = _ref_robot_link;
 		_ori_pub.publish(obj_list);

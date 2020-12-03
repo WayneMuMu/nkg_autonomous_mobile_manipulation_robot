@@ -60,7 +60,7 @@ pottedplant
 bed
 diningtable
 toilet
-tvmonitor
+tvmonitor, 0.6, 0.2, 0.9
 laptop
 mouse
 remote
