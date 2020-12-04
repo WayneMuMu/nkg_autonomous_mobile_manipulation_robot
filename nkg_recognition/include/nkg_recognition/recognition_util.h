@@ -44,14 +44,14 @@ struct Cuboid {	// unit: m
 };
 
 struct Table {	// unit: m
-	Table(): width(0.0), length(0.0), depth(0.0){};
-	Table(const std::vector<float>&);
+	Table() = default;
+	Table(const std::vector<float>& vec){ std::copy(vec.begin(), vec.begin()+7, info.begin()); };
 	float iou(const Table&) const;
-	void reset(){ width = length = depth = 0.0;};
+	void reset(){ info.fill(0); coeffs.fill(0); };
 
-	pcl::PointXYZ center;
-	float width, length, depth, angle;
-	float coeffs[4];
+	// width, length, depth, x, y, z, yaw
+	std::array<float, 7> info;
+	std::array<float, 4> coeffs;
 };
 
 class RecognitionUtil {
@@ -61,7 +61,8 @@ typedef message_filters::Synchronizer<MySyncPolicy> Sync;
 
 public:
 	RecognitionUtil(const ros::NodeHandle&);
-	~RecognitionUtil();
+	RecognitionUtil(const RecognitionUtil&) = delete;
+	RecognitionUtil& operator=(const RecognitionUtil&) = delete;
 	
 	bool start();
 	bool getTable(nkg_demo_msgs::Table::Request&, nkg_demo_msgs::Table::Response&);	// ros service
@@ -81,7 +82,7 @@ private:
 	// better visualization
 	void pubVisualMesh(const tf2::Stamped<tf2::Transform>&) const;
 	void pclMeshToShapeMsg(const pcl::PolygonMesh&, shape_msgs::Mesh&) const;
-	void pclMeshToMarkerMsg(const pcl::PolygonMesh&, visualization_msgs::Marker&) const;
+//	void pclMeshToMarkerMsg(const pcl::PolygonMesh&, visualization_msgs::Marker&) const;
 
 	message_filters::Subscriber<sensor_msgs::PointCloud2> _rgbd_sub;	// point cloud topic
 	message_filters::Subscriber<nkg_demo_msgs::MultiBBox> _bb_sub;		// bounding box topic

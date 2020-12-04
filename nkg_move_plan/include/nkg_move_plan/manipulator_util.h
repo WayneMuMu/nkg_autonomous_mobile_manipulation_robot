@@ -1,24 +1,14 @@
 #ifndef NKG_MANIPULATOR_UTIL_H
 #define NKG_MANIPULATOR_UTIL_H
 
-#include <string>
-#include <ros/ros.h>
-
-#include "moveit/planning_interface/planning_interface.h"
-#include "moveit/planning_scene_monitor/planning_scene_monitor.h"
-#include "moveit/move_group_interface/move_group_interface.h"
+#include "moveit/trajectory_processing/iterative_time_parameterization.h"
+#include "moveit/planning_pipeline/planning_pipeline.h"
+#include "moveit/plan_execution/plan_execution.h"
 #include "moveit/move_group/move_group_context.h"
-#include "moveit/robot_trajectory/robot_trajectory.h"
-#include "moveit/robot_state/robot_state.h"
-#include "moveit/robot_model/robot_model.h"
-#include "moveit_msgs/Constraints.h"
-#include "geometry_msgs/Pose.h"
+#include "moveit/move_group/capability_names.h"
+
 #include "nkg_demo_msgs/XYZ.h"
 
-#include "moveit/plan_execution/plan_execution.h"
-#include <visualization_msgs/Marker.h>
-
-#define MOVEGROUP 0
 #define DRAW 1
 
 namespace move_plan{
@@ -50,15 +40,16 @@ static const char* DEFAULT_CAPABILITIES[] = {
 class Manipulator{
 public:
 	Manipulator(move_group::MoveGroupContext*, moveit::core::RobotState*);
+	Manipulator(const Manipulator&) = delete;
+	Manipulator& operator=(const Manipulator&) = delete;
+
 	void start();
 	void resetPlan();
-
 	bool moveTo(const geometry_msgs::Pose&);						// plan directly to pose
 	bool moveTo(const std::vector<double>&);						// plan directly to joints value
 	bool moveTo(const std::string&);								// plan directly to srdf name
 	bool moveTo(planning_interface::MotionPlanRequest&);			// advanced plan
 	bool execTo(const bool motion=false);							// exec after moveTo/motionTo(From
-
 	void setMotionMode(const uint8_t mode){ if (mode<3) _motion_mode = mode;
 											else ROS_ERROR("Wrong Mode!"); };	// for motionTo(From
 	bool motionToFrom(const geometry_msgs::Pose&);								// plan motion
@@ -92,11 +83,7 @@ private:
 
 	std::vector<std::string> _srdf_names;							// defined group_state in srdf
 	uint8_t _motion_mode, _replan_num;								// # has replaned for recent plan
-//	std::vector<geometry_msgs::Pose> _wayPts;
 	move_group::MoveGroupContext *_context;
-#if MOVEGROUP
-	std::unique_ptr<moveit::planning_interface::MoveGroupInterface> _plan_group;
-#endif
 	const moveit::core::JointModelGroup *_jnt_model_group;
 	moveit::core::RobotModelConstPtr _robot_model;
 	planning_scene_monitor::PlanningSceneMonitorPtr _psm;			// CORE!!!
@@ -104,7 +91,6 @@ private:
 	moveit::core::RobotState *_plan_end_state;						// record planned end state
 	std::vector<planning_interface::MotionPlanRequest> _latest_goals;// for replanning moveTo
 	std::vector<robot_trajectory::RobotTrajectoryPtr> _latest_motion;// for replanning motionTo
-//	ros::Duration _planEndTime;
 	double _pos_tol, _ori_tol, _plan_time, _replan_delay;
 	int _replan_attempts, _plan_attempts, _replan_jump;
 	bool _executed, _succeed, _replan, _care;

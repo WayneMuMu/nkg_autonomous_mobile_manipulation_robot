@@ -79,18 +79,18 @@ void someTests(){
 				poses.resize(2);
 				tf2::Quaternion quat;
 				quat.setRPY(0, 0, res.table[6] * M_PI/180);
-				tf2::Transform trans(quat, tf2::Vector3(res.table[0],res.table[1],res.table[2]));
+				tf2::Transform trans(quat, tf2::Vector3(res.table[3],res.table[4],res.table[5]));
 				tf2::Vector3 p;
 
 				geometry_msgs::Pose pose;
 				pose.orientation.w = 1;
 			
-				p = trans * tf2::Vector3(-res.table[3]/2, -res.table[4]/2, res.table[5]/2 + 0.15);
+				p = trans * tf2::Vector3(-res.table[0]/2, -res.table[1]/2, res.table[2]/2 + 0.15);
 				pose.position.x = p.getX();
 				pose.position.y = p.getY();
 				pose.position.z = p.getZ();
 				poses[0] = pose;
-				p = trans * tf2::Vector3(res.table[3]/2, res.table[4]/2, res.table[5]/2 + 0.15);
+				p = trans * tf2::Vector3(res.table[0]/2, res.table[1]/2, res.table[2]/2 + 0.15);
 				pose.position.x = p.getX();
 				pose.position.y = p.getY();
 				pose.position.z = p.getZ();

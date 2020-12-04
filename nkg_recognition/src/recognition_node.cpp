@@ -8,9 +8,10 @@ int main(int argc, char **argv){
 	spinner.start();
 
 	recognition_util::RecognitionUtil util(nh);
-	util.start();
-	
-	ROS_INFO("Hello World!");
+	if(!util.start()){
+		ROS_ERROR("Cannot start recognition_node");
+		return -1;
+	}
 
 	ros::waitForShutdown();
 	return 0;

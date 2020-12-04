@@ -104,7 +104,7 @@ void Arm::configMoveGroupCap(){
 			move_group::MoveGroupCapabilityPtr cap = _capability_plugin_loader->createUniqueInstance(capability);
 			cap->setContext(_context);
 			cap->initialize();
-			_capabilities.push_back(cap);
+			_capabilities.emplace_back(cap);
 		}
 		catch (pluginlib::PluginlibException& ex){
 			ROS_ERROR_STREAM("Exception while loading move_group capability '" << capability << "': " << ex.what());

@@ -28,25 +28,15 @@
 
 namespace recognition_util
 {
-Table::Table(const std::vector<float>& vec){
-	center.x = vec[0];
-	center.y = vec[1];
-	center.z = vec[2];
-	width = vec[3];
-	length = vec[4];
-	depth = vec[5];
-	angle = vec[6];
-};
-
 float Table::iou(const Table& t) const{
-	float area_new = width * length, area_old = t.width * t.length;
+	float area_new = info[0] * info[1], area_old = t.info[0] * t.info[1];
 	if (area_new == 0)
 		return 1.0;
-	else if (area_old == 0 || std::abs(center.z - t.center.z) > (depth + t.depth)/2)
+	else if (area_old == 0 || std::abs(info[5] - t.info[5]) > (info[2] + t.info[2])/2)
 		return 0.0;
 	else{
-		cv::RotatedRect t_new(cv::Point2f(center.x,center.y), cv::Size2f(width,length), angle);
-		cv::RotatedRect t_old(cv::Point2f(t.center.x,t.center.y), cv::Size2f(t.width,t.length), t.angle);
+		cv::RotatedRect t_new(cv::Point2f(info[3],info[4]), cv::Size2f(info[0],info[1]), info[6]);
+		cv::RotatedRect t_old(cv::Point2f(t.info[3],t.info[4]), cv::Size2f(t.info[0],t.info[1]), t.info[6]);
 		std::vector<cv::Point2f> vertices;
 		int intersectionType = cv::rotatedRectangleIntersection(t_new, t_old, vertices);
 		if (vertices.empty())
@@ -70,10 +60,6 @@ RecognitionUtil::RecognitionUtil(const ros::NodeHandle& nh): _n(nh){
 
 	// pcl pointcloud
 	_xyzrgb_ptr = boost::make_shared<pcl::PointCloud<pcl::PointXYZRGB> >();
-}
-
-RecognitionUtil::~RecognitionUtil(){
-
 }
 
 bool RecognitionUtil::start(){
@@ -254,10 +240,7 @@ void RecognitionUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 			extract.filter(*table);
 			extract.setNegative(true);
 			extract.filter(*_xyzrgb_ptr);
-			_table.coeffs[0] = coeffs1->values[0];
-			_table.coeffs[1] = coeffs1->values[1];
-			_table.coeffs[2] = coeffs1->values[2];
-			_table.coeffs[3] = coeffs1->values[3];
+			std::move(coeffs1->values.begin(), coeffs1->values.begin()+4, _table.coeffs.begin());
 			tt = std::thread(&RecognitionUtil::updateTable, this, std::cref(table), std::cref(trans));
 		}
 		else if (result1 == SEG::VERT){
@@ -283,10 +266,7 @@ void RecognitionUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 				extract.filter(*table);
 				extract.setNegative(true);
 				extract.filter(*_xyzrgb_ptr);
-				_table.coeffs[0] = coeffs2->values[0];
-				_table.coeffs[1] = coeffs2->values[1];
-				_table.coeffs[2] = coeffs2->values[2];
-				_table.coeffs[3] = coeffs2->values[3];
+				std::move(coeffs1->values.begin(), coeffs1->values.begin()+4, _table.coeffs.begin());
 				tt =std::thread(&RecognitionUtil::updateTable,this,std::cref(table),std::cref(trans));
 			}
 			else
@@ -299,6 +279,8 @@ void RecognitionUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 		ROS_INFO_STREAM("Finish removing plane, points: " << _xyzrgb_ptr->size());
 #endif
 	}
+	if (!found_t)
+		_table.reset();
 	
 	// create the KdTree object for searching for clustering
 	pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
@@ -491,11 +473,13 @@ void RecognitionUtil::pubVisualMesh(const tf2::Stamped<tf2::Transform>& trans) c
 			last_obj_list[i].operation = last_obj_list[i].REMOVE;
 		ps.world.collision_objects = std::move(last_obj_list);
 		last_obj_list.clear();
-		_obj_pub.publish(ps);
+//		_obj_pub.publish(ps);
 	}
 
-	if (_cuboids.empty())
+	if (_cuboids.empty()){
+		_obj_pub.publish(ps);
 		return;
+	}
 
 	std::vector<moveit_msgs::CollisionObject> obj_list;
 	moveit_msgs::CollisionObject obj;
@@ -583,11 +567,41 @@ void RecognitionUtil::pubVisualMesh(const tf2::Stamped<tf2::Transform>& trans) c
 		obj.mesh_poses[0] = pose;
 		obj_list.emplace_back(obj);
 	}
-	if (!obj_list.empty()){
-		ps.world.collision_objects.assign(obj_list.begin(), obj_list.end());
-		last_obj_list = std::move(obj_list);
-		_obj_pub.publish(ps);
+
+	// add table, TODO integrate in ps plane
+	if (_table.info[0] != 0 && _table.info[1] != 0){
+		shape_msgs::SolidPrimitive primitive;
+		primitive.type = primitive.BOX;
+		tf2::Quaternion quat;
+		obj.meshes.clear();
+		obj.mesh_poses.clear();
+		obj.primitives.resize(1);
+		obj.primitive_poses.resize(1);
+	
+		pose.position.x = _table.info[3];
+		pose.position.y = _table.info[4];
+		pose.position.z = _table.info[5];
+		quat.setRPY(0, 0, _table.info[6] * M_PI/180);
+		pose.orientation = tf2::toMsg(quat);
+
+		primitive.dimensions.assign(_table.info.begin(), _table.info.begin()+3);
+		obj.id = "table";
+		oc.id = obj.id;
+		oc.color.r = 1.0;
+		oc.color.g = 1.0;
+		oc.color.b = 1.0;
+		oc.color.a = 1.0;
+		ps.object_colors.emplace_back(oc);
+		obj.primitives[0] = primitive;
+		obj.primitive_poses[0] = pose;
+		obj_list.emplace_back(obj);
 	}
+
+	if (!obj_list.empty()){
+		ps.world.collision_objects.insert(ps.world.collision_objects.end(), obj_list.begin(), obj_list.end());
+		last_obj_list = std::move(obj_list);
+	}
+	_obj_pub.publish(ps);
 }
 
 void RecognitionUtil::pclMeshToShapeMsg(const pcl::PolygonMesh& in, shape_msgs::Mesh& mesh) const{
@@ -761,7 +775,8 @@ void RecognitionUtil::updateTable(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& 
 	TODO transform and re-transform for inclination
 
 	*********************************************************************/
-	float z_upper = -2.0, z_lower = 2.0;
+	float z_upper = std::numeric_limits<float>::lowest(),
+		  z_lower = std::numeric_limits<float>::max();
 	for (int i=0; i<pts.size(); ++i){
 		tf2::Vector3 xyz = trans * tf2::Vector3(cloud->at(i).x, cloud->at(i).y, cloud->at(i).z);
 		temp.x = xyz.getX();
@@ -774,13 +789,8 @@ void RecognitionUtil::updateTable(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& 
 	}
 
 	cv::RotatedRect table = cv::minAreaRect(pts);
-	_table.center.x = table.center.x;
-	_table.center.y = table.center.y;
-	_table.width = table.size.width;
-	_table.length = table.size.height;
-	_table.center.z = (z_upper + z_lower)/2;
-	_table.depth = z_upper - z_lower;
-	_table.angle = table.angle;
+	std::vector<float> vec = {table.size.width, table.size.height, z_upper-z_lower, table.center.x, table.center.y, (z_upper + z_lower)/2, table.angle};
+	std::move(vec.begin(), vec.begin()+7, _table.info.begin());
 
 	visualization_msgs::MarkerArray vis;
 	visualization_msgs::Marker draw_pts;
@@ -794,7 +804,7 @@ void RecognitionUtil::updateTable(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& 
 	draw_pts.color.a = 1.0;
 	draw_pts.header.frame_id = _ref_robot_link;
 	geometry_msgs::Point pt;
-	pt.z = _table.center.z;
+	pt.z = _table.info[5];
 	cv::Point2f vertices[4];
 	table.points(vertices);
 	for (int i=0; i<4; ++i){
@@ -807,19 +817,21 @@ void RecognitionUtil::updateTable(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& 
 }
 
 bool RecognitionUtil::getTable(nkg_demo_msgs::Table::Request &req,nkg_demo_msgs::Table::Response &res){
-	res.table.resize(7);
-	res.table[0] = _table.center.x;
-	res.table[1] = _table.center.y;
-	res.table[2] = _table.center.z;
-	res.table[3] = _table.width;
-	res.table[4] = _table.length;
-	res.table[5] = _table.depth;
-	res.table[6] = _table.angle;
-	ROS_ERROR_STREAM("Table info: " << _table.center.x <<","<< _table.center.y <<","<< _table.center.z <<","<< _table.width <<","<< _table.length <<","<< _table.depth <<","<< _table.angle);
+	res.table.assign(_table.info.begin(), _table.info.end());
+
+	std::stringstream ss;
+	ss << "Table info: ";
+	for (const auto& info : _table.info){
+		ss << info << ", ";
+	}
+	std::string t_str(ss.str());
+	t_str.pop_back();
+	t_str.pop_back();
+	ROS_INFO_STREAM(t_str);
 
 	// according to openCV, angle is within (-90,0] (degree)
 	float angle_thres = 90.0, iou_thres = 0.3;	// TODO threshold tuning
-	if (_table.angle > -angle_thres || _table.angle+90 < angle_thres){	// consider aligned
+	if (_table.info[6] > -angle_thres || _table.info[6]+90 < angle_thres){	// consider aligned
 		res.ready = true;
 		Table cleaned_table(req.cleaned_table);
 		res.update = (_table.iou(cleaned_table) < iou_thres);
@@ -830,4 +842,5 @@ bool RecognitionUtil::getTable(nkg_demo_msgs::Table::Request &req,nkg_demo_msgs:
 	}
 	return true;
 }
+
 }	// namespace recognition_util

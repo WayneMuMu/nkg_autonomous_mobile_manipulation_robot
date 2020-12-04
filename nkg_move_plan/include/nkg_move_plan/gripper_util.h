@@ -16,11 +16,13 @@ namespace move_plan
 class Gripper{
 public:
 	Gripper(move_group::MoveGroupContext*, moveit::core::RobotState*);
+	Gripper(const Gripper&) = delete;
+	Gripper& operator=(const Gripper&) = delete;
 	void start();
 	bool planAndExecGrasp(const moveit_msgs::PickupGoal&);
 	bool planAndExecPlace(const moveit_msgs::PlaceGoal&);
 	bool gripperTo(const double, const bool queued=false);
-	bool execTo(); 
+	bool execTo();
 	void resetGoal();
 
 private:

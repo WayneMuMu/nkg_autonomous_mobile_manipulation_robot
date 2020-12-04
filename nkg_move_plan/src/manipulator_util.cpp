@@ -8,20 +8,14 @@
  *	Version: 	1.0.0
  *********************************************************************/
 #include "nkg_move_plan/manipulator_util.h"
+#include "moveit/robot_state/cartesian_interpolator.h"
 #include "moveit/kinematic_constraints/utils.h"
 #include "moveit/robot_state/conversions.h"
-#include "moveit/planning_pipeline/planning_pipeline.h"
-#include "moveit/move_group/capability_names.h"
 #include "moveit_msgs/GetCartesianPath.h"
 #include "moveit_msgs/GetPositionFK.h"
-#include "moveit/trajectory_processing/iterative_time_parameterization.h"
-#include "moveit/collision_detection/collision_common.h"
-#include "moveit/robot_state/cartesian_interpolator.h"
-
 #include <tf2_eigen/tf2_eigen.h>
+
 #include <cmath>
-#include <random>
-#include <typeinfo>
 
 #define PLAN_GROUP "arm"
 #define BASE_LINK "dobot_m1_base_link"
@@ -39,19 +33,7 @@ Manipulator::Manipulator(move_group::MoveGroupContext* context, moveit::core::Ro
 	configParam();
 
 	// Planning Scene Monitor
-	_psm = _context->planning_scene_monitor_;	
-
-#if MOVEGROUP
-	// MoveGroup (if used, please configure launch file as in XXrobotXX_demo.launch)
-    _plan_group.reset(new moveit::planning_interface::MoveGroupInterface(PLAN_GROUP));
-    _plan_group->setGoalPositionTolerance(_pos_tol);
-    _plan_group->setGoalOrientationTolerance(_ori_tol);
-    _plan_group->setPlanningTime(_plan_time);
-	_plan_group->setNumPlanningAttempts(_plan_attempts);
-	_plan_group->allowReplanning(true);
-	_plan_group->setNumReplanningAttempts(_replan_attempts);
-	_plan_group->setReplanningDelay(_replan_delay);
-#endif
+	_psm = _context->planning_scene_monitor_;
 
 	_robot_model = _psm->getRobotModel();
 
@@ -199,7 +181,7 @@ bool Manipulator::moveTo(const moveit_msgs::Constraints& goal_msgs){
 
 bool Manipulator::moveTo(planning_interface::MotionPlanRequest& req){
 	if (planTo(req)){
-		_latest_goals.emplace_back(std::move(req));
+		_latest_goals.emplace_back(req);
 		return true;
 	}
 	else
@@ -207,7 +189,7 @@ bool Manipulator::moveTo(planning_interface::MotionPlanRequest& req){
 }
 
 bool Manipulator::planTo(planning_interface::MotionPlanRequest& req){
-	uint8_t plan_num = 0;
+	size_t plan_num = 0;
 	while (plan_num < _plan_attempts){
 		// plan and write
 		planning_scene_monitor::LockedPlanningSceneRO lscene(_psm);
@@ -228,7 +210,7 @@ bool Manipulator::planTo(planning_interface::MotionPlanRequest& req){
 		++plan_num;
 	}
 	// plan fails
-	ROS_ERROR_STREAM("Plan fails! Has planed" << plan_num << " times!");
+	ROS_ERROR_STREAM("Plan fails! Has planed " << plan_num << " times!");
 	return false;
 }
 
@@ -285,7 +267,7 @@ bool Manipulator::execTo(bool motion){
 #if DRAW
 		moveit::core::RobotState temp(*_psm->getStateMonitor()->getCurrentState());
 		geometry_msgs::Pose pose = tf2::toMsg(temp.getGlobalLinkTransform(EEF_GROUP));
-		_draw_exec.points.emplace_back(std::move(pose.position));
+		_draw_exec.points.emplace_back(pose.position);
 		_draw_exec.header.stamp = ros::Time::now();
 		_marker_pub.publish(_draw_exec);
 #endif
@@ -323,9 +305,9 @@ void Manipulator::drawPath(){
 		for (int j=0; j<_plan_traj[i]->getWayPointCount(); ++j){
 			temp = _plan_traj[i]->getWayPoint(j);
 			pose = tf2::toMsg(temp.getGlobalLinkTransform(EEF_GROUP));
-			_draw_plan.points.emplace_back(std::move(pose.position));
+			_draw_plan.points.emplace_back(pose.position);
 			if (j == 0)
-				_draw_pts.points.emplace_back(std::move(pose.position));
+				_draw_pts.points.emplace_back(pose.position);
 		}
 	}
 
@@ -443,7 +425,7 @@ bool Manipulator::replanMotion(const std::pair<int, int>& cur_idx){
 	bool keep = false;
 	while (ros::Time::now()-t < ros::Duration(5.0)){
 		if (!isPtValid(*_plan_end_state))
-			ROS_ERROR("Currently stuck in obstacle!");
+			ROS_ERROR_STREAM("Currently stuck in obstacle!");
 		else{
 			keep = true;
 			break;
@@ -659,7 +641,7 @@ bool Manipulator::motionToFrom(const geometry_msgs::Pose& ps1, const geometry_ms
 			double r, theta;
 			int sample_num = 5;
 			moveit::core::RobotState temp(_robot_model);
-			poses.emplace_back(std::move(from_pose));
+			poses.emplace_back(from_pose);
 			// semi-uniform sampling within ring , sample_num random waypoints, note the offset 0.1
 			for (int i=0; i<sample_num; ++i){
 				ros::Time start = ros::Time::now();
@@ -676,11 +658,11 @@ bool Manipulator::motionToFrom(const geometry_msgs::Pose& ps1, const geometry_ms
 					}
 				}while(!valid && ros::Time::now() - start < ros::Duration(0.1) );
 				if (valid)
-					poses.emplace_back(std::move(msg));
+					poses.emplace_back(msg);
 				else
 					ROS_ERROR_STREAM("Timeout at "<<i+1<<"-th sampling!");
 			}
-			poses.emplace_back(std::move(to_pose));
+			poses.emplace_back(to_pose);
 			break;
 		}
 		case MOTION::LINE:{
@@ -734,12 +716,12 @@ bool Manipulator::motionToFrom(const geometry_msgs::Pose& ps1, const geometry_ms
 			else{
 				direct = DIRECT::Y;
 			}
-			poses.emplace_back(std::move(from_pose));
+			poses.emplace_back(from_pose);
 
 			// debug: prevent infinite loop
 //			ros::Time start = ros::Time::now();
 
-			// TODO can optimize via std::move(msg) and rewrite msg as poses.back()
+			// TODO optimize?
 			while(std::abs(msg.position.x-to_pose.position.x) > 1e-4 || std::abs(msg.position.y-to_pose.position.y) > 1e-4){
 				if(horiz){
 					if (checky){
@@ -801,7 +783,7 @@ bool Manipulator::motionToFrom(const geometry_msgs::Pose& ps1, const geometry_ms
 */
 			}
 
-			poses.emplace_back(std::move(to_pose));
+			poses.emplace_back(to_pose);
 			break;
 		}
 		case MOTION::CIRC:{

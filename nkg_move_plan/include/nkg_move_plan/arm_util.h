@@ -28,6 +28,8 @@ typedef boost::variant<bool, geometry_msgs::Pose, std::vector<double>, std::stri
 class Arm{
 public:
 	Arm();
+	Arm(const Arm&) = delete;
+	Arm& operator=(const Arm&) = delete;
 	void start();
 	void startPSM();
 	void stopPSM();
