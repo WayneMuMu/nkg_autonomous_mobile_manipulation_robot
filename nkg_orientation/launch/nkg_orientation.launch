@@ -5,7 +5,7 @@
   <arg name="y" default="0.2"/>
   <arg name="z" default="0.8"/>
   <arg name="yaw" default="1.57"/>
-  <arg name="pitch" default="0.25"/>
+  <arg name="pitch" default="1.25"/>
   <arg name="row" default="0"/>
 
   <node name="orientation_node" pkg="nkg_orientation" type="nkg_orientation_node" output="screen">

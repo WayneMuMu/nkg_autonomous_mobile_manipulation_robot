@@ -6,3 +6,7 @@ planTime: 0.1
 replanJump: 5
 #posTolerance: 0.005
 #oriTolerance: 0.005
+#regraspDelay: 0.01
+#regraspAttempts: 10
+#replaceDelay: 0.01
+#replaceAttempts: 10

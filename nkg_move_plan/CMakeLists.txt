@@ -12,17 +12,14 @@ find_package(catkin REQUIRED COMPONENTS
   moveit_msgs
   moveit_ros_move_group
   moveit_ros_planning
+  moveit_ros_manipulation
   moveit_ros_planning_interface
   roscpp
-  rospy
-  std_msgs
-  message_generation
-  tf2
-  tf2_eigen
-  tf2_ros
-  pluginlib
   nkg_demo_msgs
   visualization_msgs
+  tf2_eigen
+  tf2_ros
+  tf2_geometry_msgs
 )
 
 ## System dependencies are found with CMake's conventions
@@ -115,9 +112,9 @@ find_package(catkin REQUIRED COMPONENTS
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-#  INCLUDE_DIRS include
-#  LIBRARIES nkg_move_plan
-   CATKIN_DEPENDS moveit_core moveit_msgs moveit_ros_move_group moveit_ros_planning roscpp rospy std_msgs message_runtime moveit_ros_planning_interface tf2_eigen pluginlib visualization_msgs tf2_ros nkg_demo_msgs tf2
+   INCLUDE_DIRS include
+   LIBRARIES ${PROJECT_NAME}
+   CATKIN_DEPENDS moveit_core moveit_msgs moveit_ros_move_group moveit_ros_planning moveit_ros_manipulation roscpp nkg_demo_msgs visualization_msgs tf2_eigen tf2_ros tf2_geometry_msgs
 #  DEPENDS system_lib
 )
 

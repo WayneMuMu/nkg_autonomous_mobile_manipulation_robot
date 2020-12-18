@@ -5,36 +5,20 @@
 #include "moveit/planning_pipeline/planning_pipeline.h"
 #include "moveit/plan_execution/plan_execution.h"
 #include "moveit/move_group/move_group_context.h"
-#include "moveit/move_group/capability_names.h"
+#include "nkg_move_plan/name_def.h"
 
-#include "nkg_demo_msgs/XYZ.h"
-
-#define DRAW 1
+#include "nkg_demo_msgs/GetXYZ.h"
 
 namespace move_plan{
-enum MOTION: uint8_t{
-	RAND = 0,
-	LINE = 1,
-	CIRC = 2 
+enum class MOTION{
+	RAND,
+	LINE,
+	CIRC 
 };
-enum DIRECT: uint8_t{
-	X = 0,
-	Y = 1,
-	R = 2 
-};
-
-static const char* DEFAULT_CAPABILITIES[] = {
-   "move_group/MoveGroupCartesianPathService",
-   "move_group/MoveGroupKinematicsService",
-   "move_group/MoveGroupExecuteTrajectoryAction",
-   "move_group/MoveGroupMoveAction",
-   "move_group/MoveGroupPickPlaceAction",
-   "move_group/MoveGroupPlanService",
-   "move_group/MoveGroupQueryPlannersService",
-   "move_group/MoveGroupStateValidationService",
-   "move_group/MoveGroupGetPlanningSceneService",
-   "move_group/ApplyPlanningSceneService",
-   "move_group/ClearOctomapService",
+enum class DIRECT{
+	X,
+	Y,
+	R 
 };
 
 class Manipulator{
@@ -49,9 +33,9 @@ public:
 	bool moveTo(const std::vector<double>&);						// plan directly to joints value
 	bool moveTo(const std::string&);								// plan directly to srdf name
 	bool moveTo(planning_interface::MotionPlanRequest&);			// advanced plan
-	bool execTo(const bool motion=false);							// exec after moveTo/motionTo(From
-	void setMotionMode(const uint8_t mode){ if (mode<3) _motion_mode = mode;
-											else ROS_ERROR("Wrong Mode!"); };	// for motionTo(From
+	bool execTo(bool motion=false);									// exec after moveTo/motionTo(From
+	void setMotionMode(MOTION mode){ _motion_mode = mode; };		// for motionTo(From
+	void moveIntoWS(geometry_msgs::Pose&, DIRECT);					// move target into workspace
 	bool motionToFrom(const geometry_msgs::Pose&);								// plan motion
 	bool motionToFrom(const std::vector<double>&);								// plan motion
 	bool motionToFrom(const geometry_msgs::Pose&, const geometry_msgs::Pose&);	// plan motion
@@ -59,7 +43,7 @@ public:
 	bool motionTo(const std::vector<geometry_msgs::Pose>&);						// plan motion
 	bool motionTo(const std::vector<std::vector<double> >&);					// plan motion
 
-	bool getXYZ(nkg_demo_msgs::XYZ::Request&, nkg_demo_msgs::XYZ::Response&);
+	bool getXYZ(nkg_demo_msgs::GetXYZ::Request&, nkg_demo_msgs::GetXYZ::Response&);
 
 private:
 	void configParam();
@@ -76,13 +60,12 @@ private:
 	bool isPtValid(const moveit::core::RobotState&);				// check robot state valid or not
 	bool calcMotionLines(const std::vector<geometry_msgs::Pose>&);	// calc Cartesian path
 	bool calcMotionCircs(const std::vector<geometry_msgs::Pose>&);	// calc Circular  path
-	void moveIntoWS(geometry_msgs::Pose&, uint8_t);					// move target into workspace
 #if DRAW
 	void drawPath();		// draw rviz markers
 #endif
 
 	std::vector<std::string> _srdf_names;							// defined group_state in srdf
-	uint8_t _motion_mode, _replan_num;								// # has replaned for recent plan
+	MOTION _motion_mode;											// mode for motionTo
 	move_group::MoveGroupContext *_context;
 	const moveit::core::JointModelGroup *_jnt_model_group;
 	moveit::core::RobotModelConstPtr _robot_model;
@@ -92,7 +75,7 @@ private:
 	std::vector<planning_interface::MotionPlanRequest> _latest_goals;// for replanning moveTo
 	std::vector<robot_trajectory::RobotTrajectoryPtr> _latest_motion;// for replanning motionTo
 	double _pos_tol, _ori_tol, _plan_time, _replan_delay;
-	int _replan_attempts, _plan_attempts, _replan_jump;
+	int _replan_attempts, _plan_attempts, _replan_jump, _replan_num;
 	bool _executed, _succeed, _replan, _care;
 	ros::ServiceServer _xyz_srv;
 #if DRAW

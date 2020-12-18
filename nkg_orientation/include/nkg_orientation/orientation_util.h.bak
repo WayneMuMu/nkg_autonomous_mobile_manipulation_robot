@@ -17,18 +17,18 @@
 
 namespace orientation_util
 {
-enum class SEG_RESULT{
-	NOPLANE,
-	HORIZ,
-	VERT,
-	UNKNOWN 
+enum SEG: uint8_t{
+	NOPLANE = 0,
+	HORIZ = 1,
+	VERT = 2,
+	UNKNOWN = 3 
 };
-/*
-enum class VISUAL{
-	MESH,
-	CUBOID
+
+enum VISUAL: uint8_t{
+	MESH = 0,
+	CUBOID = 1
 };
-*/
+
 struct BBox {	// unit: pixel
 	int cs  = 0, ce = 0, rs = 0, re = 0;
 	int classId = -1;
@@ -66,7 +66,7 @@ private:
 	void pubVoxel(const pcl::PCLPointCloud2&) const;
 	void pubCluster() const;
 	void pubVisualCuboid() const;
-	SEG_RESULT getPlane(const tf2::Stamped<tf2::Transform>&, pcl::PointIndices::Ptr&, pcl::ModelCoefficients::Ptr&, pcl::PointCloud<pcl::PointXYZRGB>::Ptr&) const;
+	uint8_t getPlane(const tf2::Stamped<tf2::Transform>&, pcl::PointIndices::Ptr&, pcl::ModelCoefficients::Ptr&, pcl::PointCloud<pcl::PointXYZRGB>::Ptr&) const;
 
 	// better visualization
 	void pubVisualMesh() const;
@@ -92,7 +92,7 @@ private:
 	std::vector<std::string> _classes;							// names in COCO dataset
 	std::string _ref_robot_link;								// transform camera to robot frame
 	std_msgs::ColorRGBA _default_color;							// yolov3 object default color: green
-	mutable std::vector<std::array<unsigned int, 3> > _rgbs;	// for drawing clusters
+	mutable std::vector<std::array<uint8_t, 3> > _rgbs;			// for drawing clusters
 };
 }
 #endif

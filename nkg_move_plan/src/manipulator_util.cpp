@@ -17,30 +17,22 @@
 
 #include <cmath>
 
-#define PLAN_GROUP "arm"
-#define BASE_LINK "dobot_m1_base_link"
-#define EEF_GROUP "dobot_m1_gripper_link"
-// for DOBOT M1 params
-#define ZMAX 0.25
-#define ZMIN 0.1
-#define RMAX 0.38
-#define RMIN 0.05
-
 namespace move_plan
 {
 Manipulator::Manipulator(move_group::MoveGroupContext* context, moveit::core::RobotState* st): _motion_mode(MOTION::LINE), _context(context), _plan_end_state(st){
-	// Retrieve Parameters
+	// retrieve parameters
 	configParam();
 
 	// Planning Scene Monitor
 	_psm = _context->planning_scene_monitor_;
 
+	// Robot Model
 	_robot_model = _psm->getRobotModel();
 
 	// Joint Model Group
 	_jnt_model_group = _plan_end_state->getJointModelGroup(PLAN_GROUP);
 
-	// Defined group_states in SRDF
+	// defined group_states in SRDF
 	_srdf_names = _jnt_model_group->getDefaultStateNames();
 
 #if DRAW
@@ -66,14 +58,14 @@ Manipulator::Manipulator(move_group::MoveGroupContext* context, moveit::core::Ro
 
 void Manipulator::configParam(){
 	ros::NodeHandle _n("~");
-	_n.param("posTolerance", _pos_tol, 0.005);
-	_n.param("oriTolerance", _ori_tol, 0.005);
-	_n.param("planTime", _plan_time, 0.1);
-	_n.param("replanDelay", _replan_delay, 0.01);
-	_n.param("replanAttempts", _replan_attempts, 50);
-	_n.param("planAttempts", _plan_attempts, 3);
-	_n.param("replanJump", _replan_jump, 5);
-	_n.param("careAllTargets", _care, false);
+	_n.param<double>("posTolerance", _pos_tol, 0.005);
+	_n.param<double>("oriTolerance", _ori_tol, 0.005);
+	_n.param<double>("planTime", _plan_time, 0.1);
+	_n.param<double>("replanDelay", _replan_delay, 0.01);
+	_n.param<int>("replanAttempts", _replan_attempts, 50);
+	_n.param<int>("planAttempts", _plan_attempts, 3);
+	_n.param<int>("replanJump", _replan_jump, 5);
+	_n.param<bool>("careAllTargets", _care, false);
 }
 
 void Manipulator::start(){
@@ -86,7 +78,7 @@ void Manipulator::start(){
 	resetPlan();
 }
 
-bool Manipulator::getXYZ(nkg_demo_msgs::XYZ::Request &req,nkg_demo_msgs::XYZ::Response &res){
+bool Manipulator::getXYZ(nkg_demo_msgs::GetXYZ::Request &req, nkg_demo_msgs::GetXYZ::Response &res){
 	moveit::core::RobotState temp(_robot_model);
 	temp.setJointGroupPositions(_jnt_model_group, req.joints);
 	geometry_msgs::Pose pose = tf2::toMsg(temp.getGlobalLinkTransform(EEF_GROUP));
@@ -248,7 +240,7 @@ bool Manipulator::execTo(bool motion){
 	// construct plan
 	plan_execution::ExecutableMotionPlan plan;
 	plan.plan_components_.resize(_plan_traj.size());
-	for (int i=0; i<_plan_traj.size(); ++i){
+	for (size_t i=0; i<_plan_traj.size(); ++i){
 		plan.plan_components_[i].trajectory_ = std::move(_plan_traj[i]);
 		plan.plan_components_[i].description_ = "plan"+std::to_string(i);
 		plan.plan_components_[i].trajectory_monitoring_ = true;
@@ -260,7 +252,6 @@ bool Manipulator::execTo(bool motion){
 	_executed = _succeed = _replan = false;
 	boost::thread t(&Manipulator::execThread, this, plan);
 	while (ros::ok() && !_executed){
-		r.sleep();
 		return_idx  = _context->trajectory_execution_manager_-> getCurrentExpectedTrajectoryIndex();
 		if (return_idx.first != -1)
 			cur_idx = return_idx;
@@ -271,6 +262,7 @@ bool Manipulator::execTo(bool motion){
 		_draw_exec.header.stamp = ros::Time::now();
 		_marker_pub.publish(_draw_exec);
 #endif
+		r.sleep();
 	}
 	t.join();
 
@@ -301,8 +293,8 @@ void Manipulator::drawPath(){
 	moveit::core::RobotState temp(_robot_model);
 	geometry_msgs::Pose pose;
 
-	for (int i=0; i<_plan_traj.size(); ++i){
-		for (int j=0; j<_plan_traj[i]->getWayPointCount(); ++j){
+	for (size_t i=0; i<_plan_traj.size(); ++i){
+		for (size_t j=0; j<_plan_traj[i]->getWayPointCount(); ++j){
 			temp = _plan_traj[i]->getWayPoint(j);
 			pose = tf2::toMsg(temp.getGlobalLinkTransform(EEF_GROUP));
 			_draw_plan.points.emplace_back(pose.position);
@@ -336,8 +328,8 @@ void Manipulator::calcIPTP(){
 	robot_trajectory::RobotTrajectory temp(_robot_model, PLAN_GROUP);
 
 	// Record number of waypoints in _plan_traj[] to recover _plan_traj
-	std::vector<int> way_pts_num(_plan_traj.size(), 0);
-	for (int i=0; i<_plan_traj.size(); ++i){
+	std::vector<size_t> way_pts_num(_plan_traj.size(), 0);
+	for (size_t i=0; i<_plan_traj.size(); ++i){
 		way_pts_num[i] = _plan_traj[i]->getWayPointCount();
 		temp.append(*_plan_traj[i], 0);
 	}
@@ -346,10 +338,10 @@ void Manipulator::calcIPTP(){
 	if (!iptp.computeTimeStamps(temp))
 		ROS_WARN_STREAM("IPTP fails!");
 	else{
-		int idx = 0;
-		for (int i=0; i<_plan_traj.size(); ++i){
+		size_t idx = 0;
+		for (size_t i=0; i<_plan_traj.size(); ++i){
 			_plan_traj[i]->clear();
-			for (int j=0; j<way_pts_num[i]; ++j){
+			for (size_t j=0; j<way_pts_num[i]; ++j){
 					_plan_traj[i]->addSuffixWayPoint(temp.getWayPointPtr(idx), temp.getWayPointDurationFromPrevious(idx));
 				++idx;
 			}
@@ -391,7 +383,7 @@ bool Manipulator::replanMove(const std::pair<int, int>& cur_idx){
 	if (!keep)
 		return false;
 
-	for (int i=0; i<temp_goals.size(); ++i){
+	for (size_t i=0; i<temp_goals.size(); ++i){
 		if (!moveTo(temp_goals[i])){
 			ROS_ERROR_STREAM("Replan Fails at Goal["<<i<<"]");
 			if (_care){
@@ -439,9 +431,9 @@ bool Manipulator::replanMotion(const std::pair<int, int>& cur_idx){
 
 	// Two kinds of replan scenarios
 	if (!moveTo(_latest_motion[start_idx.first]->getWayPoint(start_idx.second))){
-		int j = start_idx.second+1;
+		size_t j = start_idx.second+1;
 		// find a "far" reachable pt, and construct rest plan
-		for (int i=start_idx.first; i<_latest_motion.size(); ++i){
+		for (size_t i=start_idx.first; i<_latest_motion.size(); ++i){
 			for (; j<_latest_motion[i]->getWayPointCount(); j+=_replan_jump){
 				if(isPtValid(_latest_motion[i]->getWayPoint(j))){
 					if (connectTo(_latest_motion[i]->getWayPoint(j))){
@@ -449,13 +441,13 @@ bool Manipulator::replanMotion(const std::pair<int, int>& cur_idx){
 						// in case current at _latest_motion[i]->getWayPoint(j) -> empty for back()
 						if (_plan_traj.empty())
 							_plan_traj.emplace_back(std::make_shared<robot_trajectory::RobotTrajectory>(_robot_model, PLAN_GROUP));
-						for (int k=j+1; k<_latest_motion[i]->getWayPointCount(); ++k){
+						for (size_t k=j+1; k<_latest_motion[i]->getWayPointCount(); ++k){
 							// Use 0 instead of _latest_motion[i]->getWayPointDurationFromPrevious(k)
 							// since execTo will execute IPTP
 							_plan_traj.back()->addSuffixWayPoint(_latest_motion[i]->getWayPointPtr(k), 0.0);
 						}
 						// append rest plan
-						for (int l=i+1; l<_latest_motion.size(); ++l)
+						for (size_t l=i+1; l<_latest_motion.size(); ++l)
 							_plan_traj.emplace_back(std::move(_latest_motion[l]));
 						// update latest planned motion
 						_latest_motion.assign(_plan_traj.cbegin(), _plan_traj.cend());
@@ -476,7 +468,7 @@ bool Manipulator::replanMotion(const std::pair<int, int>& cur_idx){
 		// in case current at _latest_motion[i]->getWayPoint(j) -> empty for back()
 		if (_plan_traj.empty())
 			_plan_traj.emplace_back(std::make_shared<robot_trajectory::RobotTrajectory>(_robot_model, PLAN_GROUP));
-		int j = start_idx.second+1;
+		size_t j = start_idx.second+1;
 		for (; j<_latest_motion[start_idx.first]->getWayPointCount(); ++j){
 			if (isPtValid(_latest_motion[start_idx.first]->getWayPoint(j)))
 				_plan_traj.back()->addSuffixWayPoint(_latest_motion[start_idx.first]->getWayPointPtr(j),0.0);
@@ -490,7 +482,7 @@ bool Manipulator::replanMotion(const std::pair<int, int>& cur_idx){
 		for (; j<_latest_motion[start_idx.first]->getWayPointCount(); ++j)
 			_plan_traj.back()->addSuffixWayPoint(_latest_motion[start_idx.first]->getWayPointPtr(j),0.0);
 		// append rest plan
-		for (int i = start_idx.first+1; i<_latest_motion.size(); ++i)
+		for (size_t i = start_idx.first+1; i<_latest_motion.size(); ++i)
 			_plan_traj.emplace_back(std::move(_latest_motion[i]));
 		// update latest planned motion
 		_latest_motion.assign(_plan_traj.cbegin(), _plan_traj.cend());
@@ -499,9 +491,15 @@ bool Manipulator::replanMotion(const std::pair<int, int>& cur_idx){
 		return execTo(true);
 	}
 	// replan fails
-	ROS_ERROR_STREAM("Replan Motion Fails!");
 	resetPlan();
-	return false;
+	if (_care){
+		ROS_ERROR_STREAM("Replan motion fails!");
+		return false;
+	}
+	else{
+		ROS_WARN_STREAM("Cannot motion further");
+		return true;
+	}
 }
 
 bool Manipulator::connectTo(const moveit::core::RobotState& next){
@@ -523,14 +521,14 @@ bool Manipulator::isPtValid(const moveit::core::RobotState& st){
 
 bool Manipulator::motionTo(const std::vector<std::vector<double> >& joints){
 	// check number of joint values
-	for (int i=0; i<joints.size(); ++i){
+	for (size_t i=0; i<joints.size(); ++i){
 		if ((_jnt_model_group->getActiveJointModelNames()).size() != joints[i].size()){
 			ROS_ERROR_STREAM("Mismatch number of joints at "<<i<<"-th!");
 			return false;
 		}
 	}
 	if (_motion_mode == MOTION::RAND){
-		for (int i=0; i<joints.size(); ++i){
+		for (size_t i=0; i<joints.size(); ++i){
 			if(!moveTo(joints[i])){
 				ROS_ERROR_STREAM("Motion plan fails at joints["<<i<<"]!");
 				if (_care){
@@ -547,7 +545,7 @@ bool Manipulator::motionTo(const std::vector<std::vector<double> >& joints){
 		std::vector<geometry_msgs::Pose> jnt2poses;
 		moveit::core::RobotState temp(_robot_model);
 		jnt2poses.resize(joints.size());
-		for (int i=0; i<joints.size(); ++i){
+		for (size_t i=0; i<joints.size(); ++i){
 			temp.setJointGroupPositions(_jnt_model_group, joints[i]);
 			jnt2poses[i] = tf2::toMsg(temp.getGlobalLinkTransform(EEF_GROUP));
 		}
@@ -558,7 +556,7 @@ bool Manipulator::motionTo(const std::vector<std::vector<double> >& joints){
 bool Manipulator::motionTo(const std::vector<geometry_msgs::Pose>& poses){
 	switch(_motion_mode){
 		case MOTION::RAND:{
-			for (int i=0; i<poses.size(); ++i){
+			for (size_t i=0; i<poses.size(); ++i){
 				if(!moveTo(poses[i])){
 					ROS_ERROR_STREAM("Motion plan fails at poses["<<i<<"]!");
 					if (_care){
@@ -639,11 +637,11 @@ bool Manipulator::motionToFrom(const geometry_msgs::Pose& ps1, const geometry_ms
 			std::default_random_engine gen(rd());
 			std::uniform_real_distribution<double> r_unif(0.0, 1.0), z_unif(ZMIN, ZMAX);
 			double r, theta;
-			int sample_num = 5;
+			size_t sample_num = 5;
 			moveit::core::RobotState temp(_robot_model);
 			poses.emplace_back(from_pose);
 			// semi-uniform sampling within ring , sample_num random waypoints, note the offset 0.1
-			for (int i=0; i<sample_num; ++i){
+			for (size_t i=0; i<sample_num; ++i){
 				ros::Time start = ros::Time::now();
 				bool valid = false;
 				do{
@@ -709,7 +707,7 @@ bool Manipulator::motionToFrom(const geometry_msgs::Pose& ps1, const geometry_ms
 			bool checky = (xmax-xmin > ymax-ymin)? true : false, horiz = checky;
 
 			// moving resolution: 0.05, and suppose the bigger side solution is larger than 0.05
-			uint8_t direct;
+			DIRECT direct;
 			if (checky){
 				direct = DIRECT::X;
 			}
@@ -795,7 +793,7 @@ bool Manipulator::motionToFrom(const geometry_msgs::Pose& ps1, const geometry_ms
 	return motionTo(poses);
 }
 
-void Manipulator::moveIntoWS(geometry_msgs::Pose& pose, uint8_t direct){	// DOBOT M1
+void Manipulator::moveIntoWS(geometry_msgs::Pose& pose, DIRECT direct){	// DOBOT M1
 	if (pose.position.z > ZMAX)
 		pose.position.z = ZMAX;
 	else if (pose.position.z < ZMIN)
@@ -845,7 +843,7 @@ bool Manipulator::calcMotionLines(const std::vector<geometry_msgs::Pose>& poses)
 	double fraction;
 
 	// move to first achievable point
-	int i=0;
+	size_t i=0;
 	for (; i<poses.size(); ++i){
 		if(!moveTo(poses[i])){
 			ROS_ERROR_STREAM("Fail to moveTo poses["<<i<<"] on Line!");

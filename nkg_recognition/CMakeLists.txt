@@ -9,18 +9,14 @@ add_compile_options(-std=c++11)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   roscpp
-  rospy
   pcl_conversions
   pcl_ros
   sensor_msgs
   moveit_msgs
-  message_generation
   nkg_demo_msgs
   visualization_msgs
-  geometry_msgs
   tf2_geometry_msgs
   tf2_ros
-  tf2
 )
 
 find_package(OpenCV REQUIRED)
@@ -116,9 +112,9 @@ find_package(OpenCV REQUIRED)
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
    INCLUDE_DIRS include
-   LIBRARIES nkg_moving_manipulator
-   CATKIN_DEPENDS roscpp rospy pcl_conversions pcl_ros sensor_msgs message_runtime moveit_msgs nkg_demo_msgs visualization_msgs geometry_msgs tf2_geometry_msgs tf2_ros tf2
-#  DEPENDS system_lib
+   LIBRARIES ${PROJECT_NAME}
+   CATKIN_DEPENDS roscpp pcl_conversions pcl_ros sensor_msgs moveit_msgs nkg_demo_msgs visualization_msgs tf2_geometry_msgs tf2_ros
+   DEPENDS OpenCV
 )
 
 ###########

@@ -1,7 +1,8 @@
 #ifndef NKG_RECOGNITION_UTIL_H
 #define NKG_RECOGNITION_UTIL_H
 
-#include "nkg_demo_msgs/Table.h"
+#include "nkg_demo_msgs/GetTable.h"
+#include "nkg_demo_msgs/GetObjects.h"
 #include "nkg_demo_msgs/MultiBBox.h"
 #include "moveit_msgs/PlanningScene.h"
 
@@ -18,11 +19,11 @@
 
 namespace recognition_util
 {
-enum SEG: uint8_t{
-	NOPLANE = 0,
-	HORIZ = 1,
-	VERT = 2,
-	UNKNOWN = 3 
+enum class SEG_RESULT{
+	NOPLANE,
+	HORIZ,
+	VERT,
+	UNKNOWN
 };
 
 struct BBox {	// unit: pixel
@@ -41,6 +42,7 @@ struct Cuboid {	// unit: m
 	float yaw = 0.0;
 	float dim[3];
 	std::vector<int> cluster_idx;
+	std::string name;
 };
 
 struct Table {	// unit: m
@@ -65,7 +67,8 @@ public:
 	RecognitionUtil& operator=(const RecognitionUtil&) = delete;
 	
 	bool start();
-	bool getTable(nkg_demo_msgs::Table::Request&, nkg_demo_msgs::Table::Response&);	// ros service
+	bool getTable(nkg_demo_msgs::GetTable::Request&, nkg_demo_msgs::GetTable::Response&);	// service
+	bool getObjects(nkg_demo_msgs::GetObjects::Request&, nkg_demo_msgs::GetObjects::Response&);
 
 private:
 	void configParam();													// configure parameters
@@ -75,9 +78,9 @@ private:
 	void updateBBox(const nkg_demo_msgs::MultiBBoxConstPtr&);
 	void generateCuboids(const tf2::Stamped<tf2::Transform>&);
 	void pubVoxel(const pcl::PCLPointCloud2&) const;
-	void pubCluster(std::vector<uint32_t>&) const;
+	void pubCluster() const;
 	void pubVisualCuboid() const;
-	uint8_t getPlane(const tf2::Stamped<tf2::Transform>&, pcl::PointIndices::Ptr&, pcl::ModelCoefficients::Ptr&, pcl::PointCloud<pcl::PointXYZRGB>::Ptr&) const;
+	SEG_RESULT getPlane(const tf2::Stamped<tf2::Transform>&, pcl::PointIndices::Ptr&, pcl::ModelCoefficients::Ptr&, pcl::PointCloud<pcl::PointXYZRGB>::Ptr&) const;
 
 	// better visualization
 	void pubVisualMesh(const tf2::Stamped<tf2::Transform>&) const;
@@ -90,7 +93,7 @@ private:
 	std::shared_ptr<tf2_ros::Buffer> _tf_buffer;						// tf transform buffer
 	std::shared_ptr<tf2_ros::TransformListener> _tfl;					// tf transform listener
 	ros::Publisher _voxel_pub, _cluster_pub, _obj_pub, _marker_pub;		// output publishers
-	ros::ServiceServer _table_srv;										// table service
+	ros::ServiceServer _table_srv, _objs_srv;							// service providers
 	ros::NodeHandle _n;
 	std::vector<Cluster> _clusters;								// proccessed clusters
 	std::vector<Cuboid> _cuboids;								// generated cuboids
@@ -105,8 +108,7 @@ private:
 	std::vector<std::string> _classes;							// names in COCO dataset
 	std::string _ref_robot_link;								// transform camera to robot frame
 	std_msgs::ColorRGBA _default_color;							// yolov3 object default color: green
-	std::vector<uint32_t> _rgbs;								// for drawing clusters
-
+	mutable std::vector<std::array<unsigned int, 3> > _rgbs;	// for drawing clusters
 };
 }
 #endif

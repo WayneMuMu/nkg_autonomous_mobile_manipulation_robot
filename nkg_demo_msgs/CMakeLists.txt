@@ -50,14 +50,15 @@ find_package(catkin REQUIRED COMPONENTS
  add_message_files(
    FILES
    MultiBBox.msg
-   ObjectInfo.msg
+   MultiObject.msg
  )
 
 ## Generate services in the 'srv' folder
  add_service_files(
    FILES
-   Table.srv
-   XYZ.srv
+   GetTable.srv
+   GetXYZ.srv
+   GetObjects.srv
  )
 
 ## Generate actions in the 'action' folder

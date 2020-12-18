@@ -49,51 +49,19 @@
   <!-- Use doc_depend for packages you need only for building documentation: -->
   <!--   <doc_depend>doxygen</doc_depend> -->
   <buildtool_depend>catkin</buildtool_depend>
-  <build_depend>moveit_core</build_depend>
-  <build_depend>moveit_msgs</build_depend>
-  <build_depend>moveit_ros_move_group</build_depend>
-  <build_depend>moveit_ros_planning</build_depend>
-  <build_depend>moveit_ros_planning_interface</build_depend>
-  <build_depend>roscpp</build_depend>
-  <build_depend>rospy</build_depend>
-  <build_depend>std_msgs</build_depend>
-  <build_depend>nkg_demo_msgs</build_depend>
-  <build_depend>tf2_eigen</build_depend>
-  <build_depend>tf2_ros</build_depend>
-  <build_depend>tf2</build_depend>
-  <build_depend>pluginlib</build_depend>
-  <build_depend>visualization_msgs</build_depend>
-  <build_depend>message_generation</build_depend>
-  <build_export_depend>moveit_core</build_export_depend>
-  <build_export_depend>moveit_msgs</build_export_depend>
-  <build_export_depend>moveit_ros_move_group</build_export_depend>
-  <build_export_depend>moveit_ros_planning</build_export_depend>
-  <build_export_depend>roscpp</build_export_depend>
-  <build_export_depend>rospy</build_export_depend>
-  <build_export_depend>std_msgs</build_export_depend>
-  <build_export_depend>nkg_demo_msgs</build_export_depend>
-  <build_export_depend>tf2_eigen</build_export_depend>
-  <build_export_depend>tf2_ros</build_export_depend>
-  <build_export_depend>tf2</build_export_depend>
-  <build_export_depend>pluginlib</build_export_depend>
-  <build_export_depend>visualization_msgs</build_export_depend>
-  <build_export_depend>moveit_ros_planning_interface</build_export_depend>
-  <exec_depend>moveit_core</exec_depend>
-  <exec_depend>moveit_msgs</exec_depend>
-  <exec_depend>moveit_ros_move_group</exec_depend>
-  <exec_depend>moveit_ros_planning</exec_depend>
-  <exec_depend>roscpp</exec_depend>
-  <exec_depend>rospy</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
-  <exec_depend>nkg_demo_msgs</exec_depend>
-  <exec_depend>tf2_eigen</exec_depend>
-  <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>tf2</exec_depend>
-  <exec_depend>pluginlib</exec_depend>
-  <exec_depend>visualization_msgs</exec_depend>
-  <exec_depend>message_runtime</exec_depend>
-  <exec_depend>moveit_ros_planning_interface</exec_depend>
 
+  <depend>moveit_core</depend>
+  <depend>moveit_msgs</depend>
+  <depend>moveit_ros_move_group</depend>
+  <depend>moveit_ros_planning</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_ros_manipulation</depend>
+  <depend>roscpp</depend>
+  <depend>nkg_demo_msgs</depend>
+  <depend>tf2_eigen</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>

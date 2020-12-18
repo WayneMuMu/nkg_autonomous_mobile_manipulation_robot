@@ -8,7 +8,7 @@
  *	Version: 	1.0.0
  *********************************************************************/
 #include "nkg_orientation/orientation_util.h"
-#include "nkg_demo_msgs/MultiObject.h"
+#include "nkg_demo_msgs/ObjectInfo.h"
 
 #include <ros/package.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
@@ -84,7 +84,7 @@ bool OrientationUtil::start(){
 	pn.param<std::string>("cluster_output", topic, "cluster_points");
 	_cluster_pub = _n.advertise<sensor_msgs::PointCloud2>(topic, 1);
 	pn.param<std::string>("orientation_output", topic, "orientation_info");
-	_ori_pub = _n.advertise<nkg_demo_msgs::MultiObject>(topic, 1);
+	_ori_pub = _n.advertise<nkg_demo_msgs::ObjectInfo>(topic, 1);
 	pn.param<std::string>("visual_output", topic, "visual_output");
 	_marker_pub = _n.advertise<visualization_msgs::MarkerArray>(topic, 1);
 
@@ -113,13 +113,13 @@ void OrientationUtil::configParam(){
 	if (file.is_open()){
 		while ( std::getline (file, line) ){
 			std::stringstream ss(line);
-			std::vector<unsigned int> rgb;
+			std::vector<uint8_t> rgb;
 			if(std::getline(ss, line, ','))
-				rgb.emplace_back(static_cast<unsigned int>(std::stof(line)*255));	// r
+				rgb.emplace_back(static_cast<uint8_t>(std::stof(line)*255));	// r
 			if(std::getline(ss,line,','))
-				rgb.emplace_back(static_cast<unsigned int>(std::stof(line)*255));	// g
+				rgb.emplace_back(static_cast<uint8_t>(std::stof(line)*255));	// g
 			if(std::getline(ss,line,','))
-				rgb.emplace_back(static_cast<unsigned int>(std::stof(line)*255));	// b
+				rgb.emplace_back(static_cast<uint8_t>(std::stof(line)*255));	// b
 			if (rgb.size() != 3)
 				continue;
 			else
@@ -207,17 +207,17 @@ void OrientationUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 	if (_seg){
 		pcl::PointIndices::Ptr inliers1(new pcl::PointIndices);
 		pcl::ModelCoefficients::Ptr coeffs1(new pcl::ModelCoefficients);		
-		SEG_RESULT result1 = getPlane(trans, inliers1, coeffs1, _xyzrgb_ptr);
-		if(result1 == SEG_RESULT::NOPLANE)
+		uint8_t result1 = getPlane(trans, inliers1, coeffs1, _xyzrgb_ptr);
+		if(result1 == SEG::NOPLANE)
 			ROS_WARN_STREAM("Could not estimate a planar model for the given dataset.");
-		else if (result1 == SEG_RESULT::HORIZ){
+		else if (result1 == SEG::HORIZ){
 			pcl::ExtractIndices<pcl::PointXYZRGB> extract;
 			extract.setInputCloud(_xyzrgb_ptr);
 			extract.setIndices(inliers1);
 			extract.setNegative(true);
 			extract.filter(*_xyzrgb_ptr);
 		}
-		else if (result1 == SEG_RESULT::VERT){
+		else if (result1 == SEG::VERT){
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr vert(new pcl::PointCloud<pcl::PointXYZRGB>);
 			pcl::ExtractIndices<pcl::PointXYZRGB> extract;
 			extract.setInputCloud(_xyzrgb_ptr);
@@ -227,8 +227,8 @@ void OrientationUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 			extract.filter(*vert);
 			pcl::PointIndices::Ptr inliers2(new pcl::PointIndices);
 			pcl::ModelCoefficients::Ptr coeffs2(new pcl::ModelCoefficients);
-			SEG_RESULT result2 = getPlane(trans, inliers2, coeffs2, vert);
-			if (result2 == SEG_RESULT::HORIZ){
+			uint8_t result2 = getPlane(trans, inliers2, coeffs2, vert);
+			if (result2 == SEG::HORIZ){
 				pcl::ExtractIndices<pcl::PointXYZRGB> extract;
 				extract.setInputCloud(_xyzrgb_ptr);
 				extract.setIndices(inliers2);
@@ -241,7 +241,7 @@ void OrientationUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 			else
 				ROS_WARN_STREAM("Only vertical ones found. No plane segmented.");
 		}
-		else	// result1 == SEG_RESULT::UNKNOWN
+		else	// result1 == SEG::UNKNOWN
 			ROS_WARN_STREAM("The plane's orientation is unknown");
 
 #if INFO
@@ -265,7 +265,7 @@ void OrientationUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 	if (!cluster_indices.empty()){
 		_clusters.resize(cluster_indices.size());
 		// construct _clusters
-		for (size_t i=0; i<_clusters.size(); ++i)
+		for (int i=0; i<_clusters.size(); ++i)
 			_clusters[i].indices = std::move(cluster_indices[i].indices);
 	}
 	else{
@@ -296,7 +296,7 @@ void OrientationUtil::cameraCB(const sensor_msgs::PointCloud2ConstPtr& pcl_msg, 
 #endif
 }
 
-SEG_RESULT OrientationUtil::getPlane(const tf2::Stamped<tf2::Transform>& trans, pcl::PointIndices::Ptr& inliers, pcl::ModelCoefficients::Ptr& coeffs, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud) const{
+uint8_t OrientationUtil::getPlane(const tf2::Stamped<tf2::Transform>& trans, pcl::PointIndices::Ptr& inliers, pcl::ModelCoefficients::Ptr& coeffs, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud) const{
 	// create the segmentation object for the planar model
 	pcl::SACSegmentation<pcl::PointXYZRGB> seg;
 	seg.setOptimizeCoefficients(true);
@@ -308,7 +308,7 @@ SEG_RESULT OrientationUtil::getPlane(const tf2::Stamped<tf2::Transform>& trans, 
 	seg.segment (*inliers, *coeffs);
 
 	if (inliers->indices.empty())
-		return SEG_RESULT::NOPLANE;
+		return SEG::NOPLANE;
 	else{
 		tf2::Vector3 horiz(0,0,1), p_origin(0,0,0),
 							p_normal(coeffs->values[0],coeffs->values[1],coeffs->values[2]);
@@ -316,11 +316,11 @@ SEG_RESULT OrientationUtil::getPlane(const tf2::Stamped<tf2::Transform>& trans, 
 		double angle = horiz.angle(normal);
 		double err = std::abs(angle-M_PI/2);
 		if ( err > M_PI/2 - _plane_tol)
-			return SEG_RESULT::HORIZ;
+			return SEG::HORIZ;
 		else if (err < _plane_tol)
-			return SEG_RESULT::VERT;
+			return SEG::VERT;
 		else
-			return SEG_RESULT::UNKNOWN;
+			return SEG::UNKNOWN;
 	}
 }
 
@@ -332,17 +332,17 @@ void OrientationUtil::pubCluster() const{
 	if (_rgbs.size() < _clusters.size()){
 		std::random_device rd;
 		std::default_random_engine gen(rd());
-		std::uniform_int_distribution<unsigned int> rgb(0, 255);
-		for (size_t i = 0; i < _clusters.size() - _rgbs.size(); ++i)
+		std::uniform_int_distribution<uint8_t> rgb(0, 255);
+		for (int i = 0; i < _clusters.size() - _rgbs.size(); ++i)
 			_rgbs.push_back({rgb(gen), rgb(gen), rgb(gen)});
 	}
 
-	for (size_t i=0; i<_clusters.size(); ++i){
+	for (int i=0; i<_clusters.size(); ++i){
 		for (std::vector<int>::const_iterator pit = _clusters[i].indices.cbegin(); pit != _clusters[i].indices.cend(); ++pit){
 			pcl::PointXYZRGB point = _xyzrgb_ptr->at(*pit);
-			point.r = static_cast<uint8_t>(_rgbs[i][0]);
-			point.g = static_cast<uint8_t>(_rgbs[i][1]);
-			point.b = static_cast<uint8_t>(_rgbs[i][2]);
+			point.r = _rgbs[i][0];
+			point.g = _rgbs[i][1];
+			point.b = _rgbs[i][2];
 			cloud_cluster->push_back(point);
 		}
 	}
@@ -537,9 +537,9 @@ void OrientationUtil::pclMeshToMarkerMsg(const pcl::PolygonMesh& in, visualizati
 	pclMeshToShapeMsg(in, mesh);
 	m.points.resize(mesh.triangles.size()*3);
 
-	size_t i=0;
-	for (size_t idx=0; idx<mesh.triangles.size(); ++idx)
-		for (size_t subidx = 0; subidx<3; ++subidx)
+	int i=0;
+	for (int idx=0; idx<mesh.triangles.size(); ++idx)
+		for (int subidx = 0; subidx<3; ++subidx)
 			m.points[i++] = mesh.vertices[mesh.triangles[idx].vertex_indices[subidx]];
 }
 
@@ -553,7 +553,7 @@ void OrientationUtil::generateCuboids(const tf2::Stamped<tf2::Transform>& trans)
 #endif
 	_cuboids.resize(_bboxes.size());
 
-	for (size_t i=0; i<_clusters.size(); ++i){
+	for (int i=0; i<_clusters.size(); ++i){
 		int vote[_bboxes.size()] = {0};
 		std::vector<bool> flag(_bboxes.size(), false);
 		for (std::vector<int>::const_iterator it=_clusters[i].indices.cbegin(); it!=_clusters[i].indices.cend(); ++it){
@@ -590,8 +590,8 @@ void OrientationUtil::generateCuboids(const tf2::Stamped<tf2::Transform>& trans)
 #endif
 	}
 
-	nkg_demo_msgs::MultiObject obj_list;
-	size_t number = 0;
+	nkg_demo_msgs::ObjectInfo obj_list;
+	int number = 0;
 
 	// for each cuboid, combine the clusters belong to it
 	for (std::vector<Cuboid>::iterator cu=_cuboids.begin(); cu!=_cuboids.end(); ++cu){
@@ -669,7 +669,7 @@ void OrientationUtil::updateBBox(const nkg_demo_msgs::MultiBBoxConstPtr& bb_msg)
 	if (bb_msg->bbox.layout.dim[0].size == 0)
 		return;
 	_bboxes.resize(bb_msg->bbox.layout.dim[0].size);
-	for (size_t i=0; i < _bboxes.size(); ++i){
+	for (int i=0; i < _bboxes.size(); ++i){
 		_bboxes[i].classId  = static_cast<int>(bb_msg->bbox.data[6*i]);
 		_bboxes[i].prob 	= bb_msg->bbox.data[6*i+5];
 		_bboxes[i].cs = std::max(0, static_cast<int>(bb_msg->bbox.data[6*i+1]));

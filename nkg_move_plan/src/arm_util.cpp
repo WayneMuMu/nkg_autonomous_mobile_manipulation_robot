@@ -42,6 +42,9 @@ Arm::Arm(){
 
 	// Gripper
 	gripper.reset(new Gripper(_context.get(), _rec_state_ptr.get()));
+
+	// move_group
+	move_group.reset(new moveit::planning_interface::MoveGroupInterface(PLAN_GROUP));
 }
 
 void Arm::start(){
@@ -138,13 +141,12 @@ void Arm::configMoveGroupCap(){
 bool Arm::execCmdQueue(){
 	bool keep = true;
 	while(!_cmds.empty()){
-		std::pair<uint8_t, dataType> cmd = _cmds.front();
+		std::pair<CMD, dataType> cmd = _cmds.front();
 		switch(cmd.first){
-			case CMD::RESETPLAN:{
+			case CMD::RESETPLAN :
 				manipulator->resetPlan();
 				break;
-			}
-			case CMD::MOVETO:{
+			case CMD::MOVETO :
 				if (cmd.second.type() == typeid(geometry_msgs::Pose))
 					keep = manipulator->moveTo(boost::get<geometry_msgs::Pose>(cmd.second));
 				else if (cmd.second.type() == typeid(std::vector<double>))
@@ -156,8 +158,7 @@ bool Arm::execCmdQueue(){
 					keep = false;
 				}
 				break;
-			}
-			case CMD::MOTIONTO:{
+			case CMD::MOTIONTO :
 				if (cmd.second.type() == typeid(std::vector<geometry_msgs::Pose>))
 					keep = manipulator->motionTo(boost::get<std::vector<geometry_msgs::Pose> >(cmd.second));
 				else if (cmd.second.type() == typeid(std::vector<std::vector<double> >))
@@ -167,8 +168,7 @@ bool Arm::execCmdQueue(){
 					keep = false;
 				}
 				break;
-			}
-			case CMD::MOTIONTOFROM:{
+			case CMD::MOTIONTOFROM :
 				if (cmd.second.type() == typeid(geometry_msgs::Pose))
 					keep = manipulator->motionToFrom(boost::get<geometry_msgs::Pose>(cmd.second));
 				else if (cmd.second.type() == typeid(std::vector<double>))
@@ -186,17 +186,15 @@ bool Arm::execCmdQueue(){
 					keep = false;
 				}
 				break;
-			}
-			case CMD::SETMOTIONMODE:{
-				if (cmd.second.type() == typeid(uint8_t))
-					manipulator->setMotionMode(boost::get<uint8_t>(cmd.second));
+			case CMD::SETMOTIONMODE :
+				if (cmd.second.type() == typeid(MOTION))
+					manipulator->setMotionMode(boost::get<MOTION>(cmd.second));
 				else{
 					ROS_ERROR_STREAM("Wrong dataType for setMotionMode!");
 					keep = false;
 				}
 				break;
-			}
-			case CMD::EXECTO:{
+			case CMD::EXECTO :
 				if (cmd.second.type() == typeid(bool))
 					keep = manipulator->execTo(boost::get<bool>(cmd.second));
 				else{
@@ -204,14 +202,49 @@ bool Arm::execCmdQueue(){
 					keep = false;
 				}
 				break;
-			}
-		}
-		if (!keep){
-				ROS_ERROR_STREAM("Remain "<<_cmds.size()<<" cmds in CmdQueue!");
+			case CMD::RESETGRIPPER :
+				gripper->resetGripper();
+				break;
+			case CMD::GRASP :
+				if (cmd.second.type() == typeid(std::pair<std::string, std::vector<moveit_msgs::Grasp> >)){
+					std::pair<std::string, std::vector<moveit_msgs::Grasp> > data = boost::get<std::pair<std::string, std::vector<moveit_msgs::Grasp> > >(cmd.second);
+					keep = gripper->planAndExecGrasp(data.first, data.second);
+				}
+				else{
+					ROS_ERROR_STREAM("Wrong dataType for planAndExecGrasp!");
+					keep = false;
+				}
+				break;
+			case CMD::PLACE :
+				if (cmd.second.type() == typeid(std::pair<std::string, std::vector<moveit_msgs::PlaceLocation> >)){
+					std::pair<std::string, std::vector<moveit_msgs::PlaceLocation> > data = boost::get<std::pair<std::string, std::vector<moveit_msgs::PlaceLocation> > >(cmd.second);
+					keep = gripper->planAndExecPlace(data.first, data.second);
+				}
+				else{
+					ROS_ERROR_STREAM("Wrong dataType for planAndExecPlace!");
+					keep = false;
+				}
+				break;
+			case CMD::CLOSE :
+				if (cmd.second.type() == typeid(double))
+					keep = gripper->gripperTo(boost::get<double>(cmd.second));
+				else{
+					ROS_ERROR_STREAM("Wrong dataType for gripperTo!");
+					keep = false;
+				}				
+				break;
+			default:
+				ROS_ERROR_STREAM("Wrong CMD!");
 				break;
 		}
-		_cmds.erase(_cmds.begin());
+		if (!keep)	
+				break;
+		_cmds.pop_front();
 	}
+	if (!keep)
+		ROS_ERROR_STREAM("Remain "<<_cmds.size()<<" cmds in CmdQueue!");
+	else
+		ROS_INFO_STREAM("CmdQueue all executed");
 	return keep;
 }
 
